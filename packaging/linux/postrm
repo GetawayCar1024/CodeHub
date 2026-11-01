@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+if [ -d /run/systemd/system ]; then
+	systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+# Users, contests and submitted code in /var/lib/codehub are kept, even on purge,
+# because they are user data. Only the service account is removed on purge.
+if [ "$1" = "purge" ] && getent passwd codehub >/dev/null; then
+	userdel codehub >/dev/null 2>&1 || true
+fi
+
+exit 0

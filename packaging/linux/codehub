@@ -1,0 +1,6 @@
+#!/bin/sh
+# CodeHub, installed in /opt/codehub. Without --data, data is kept in ~/.local/share/codehub
+# (or $CODEHUB_DATA); the system service keeps its data in /var/lib/codehub.
+: "${CODEHUB_DATA:=${XDG_DATA_HOME:-$HOME/.local/share}/codehub}"
+export CODEHUB_DATA
+exec /opt/codehub/bin/node /opt/codehub/server.js "$@"

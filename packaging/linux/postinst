@@ -1,0 +1,29 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+	# system account for the systemd service
+	if ! getent passwd codehub >/dev/null; then
+		useradd --system --user-group --home-dir /var/lib/codehub --shell /usr/sbin/nologin codehub
+	fi
+	mkdir -p /var/lib/codehub
+	chown codehub:codehub /var/lib/codehub
+	chmod 750 /var/lib/codehub
+
+	if [ -d /run/systemd/system ]; then
+		systemctl daemon-reload >/dev/null 2>&1 || true
+		# restart the service after an upgrade if it is running
+		systemctl try-restart codehub >/dev/null 2>&1 || true
+	fi
+
+	cat <<'EOF'
+
+CodeHub is installed.
+  As a system service:   sudo systemctl enable --now codehub   (data in /var/lib/codehub)
+  Or in a terminal:      codehub --port 8088                   (data in ~/.local/share/codehub)
+Then open http://<this computer's IP>:8088/ (administrator: admin / 123456).
+
+EOF
+fi
+
+exit 0

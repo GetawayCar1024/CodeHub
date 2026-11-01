@@ -1,0 +1,119 @@
+name: CodeHub
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Test
+        run: node tests/smoke.mjs
+
+      - name: Package
+        run: node packaging/package.mjs windows
+
+      - name: Smoke test of the package
+        shell: pwsh
+        run: |
+          $v = node -p "require('fs').readFileSync('src/version.js','utf8').match(/'(.*)'/)[1]"
+          $pkg = "CodeHub-$v-windows-x64"
+          Expand-Archive "dist\$pkg.zip" -DestinationPath "$env:RUNNER_TEMP\pkg"
+          $dir = "$env:RUNNER_TEMP\pkg\$pkg"
+          if ((& "$dir\node.exe" "$dir\server.js" --version) -ne $v) { exit 1 }
+          $p = Start-Process -FilePath "$dir\node.exe" -ArgumentList "server.js --port 8099" -WorkingDirectory $dir -PassThru
+          Start-Sleep 3
+          $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8099/
+          Stop-Process $p.Id
+          if ($r.StatusCode -ne 200 -or -not (Test-Path "$dir\data\codehub.json")) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+          if-no-files-found: error
+
+  linux:
+    name: Linux x64 (.tar.gz, .deb)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Test
+        run: node tests/smoke.mjs
+
+      - name: Package
+        id: pkg
+        run: |
+          node packaging/package.mjs linux
+          v=$(node -p "require('fs').readFileSync('src/version.js','utf8').match(/'(.*)'/)[1]")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          bash packaging/linux/build-deb.sh "dist/CodeHub-$v-linux-x64" "$v" "dist/codehub_${v}_amd64.deb"
+
+      - name: Install test on Ubuntu 22.04, 24.04 and Debian 12
+        env:
+          V: ${{ steps.pkg.outputs.version }}
+        run: |
+          for img in ubuntu:22.04 ubuntu:24.04 debian:12; do
+            echo "::group::$img"
+            docker run --rm -e V -v "$PWD/dist:/w" "$img" bash -ec '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get -qq update >/dev/null
+              apt-get -qq install -y --no-install-recommends "/w/codehub_${V}_amd64.deb" curl ca-certificates >/dev/null
+              test "$(codehub --version)" = "$V"
+              (su -s /bin/sh codehub -c "/opt/codehub/bin/node /opt/codehub/server.js --port 8099 --data /var/lib/codehub" >/tmp/ch.log 2>&1 &)
+              sleep 3
+              curl -fsS http://127.0.0.1:8099/ | grep -q "<title>"
+              test -f /var/lib/codehub/codehub.json
+              tar -xzf "/w/CodeHub-${V}-linux-x64.tar.gz" -C /tmp
+              test "$(/tmp/CodeHub-${V}-linux-x64/codehub --version)" = "$V"'
+            echo "::endgroup::"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release notes
+        run: |
+          # the section of CHANGELOG.md for this version
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '/^## / {p = ($2 == v)} p' CHANGELOG.md > notes.md
+          cat notes.md
+          cd dist && sha256sum * | tee SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: CodeHub ${{ github.ref_name }}
+          body_path: notes.md
+          files: dist/*
