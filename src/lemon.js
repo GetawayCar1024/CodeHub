@@ -374,7 +374,7 @@ export class LemonLink {
       } else if (now >= c.endTime && !st.finalDone && !rt.busy && now - (rt.finalTriedAt || 0) > 10000) {
         // after the contest: once the last task has finished (rt.busy is false), judge everything once more
         rt.finalTriedAt = now;
-        this.runTask(c, 'final', 'all').then((r) => {
+        this.runTask(c, 'final').then((r) => {
           if (r === 'done') {
             st.finalDone = true;
             this.ctx.store.save();
