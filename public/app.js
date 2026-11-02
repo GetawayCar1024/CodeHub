@@ -244,7 +244,7 @@ function topbar(active) {
   const userBtn = u ? h('div', { class: 'user-menu' },
     h('button', { class: 'user-btn', onclick: (e) => menuAt(e.currentTarget, [
       { head: `${u.realName}（${u.username}）` },
-      ...(isAdmin() ? [{ label: '修改密码', onClick: () => go('#/admin/settings/password') }] : []),
+      { label: '修改密码', onClick: passwordDialog },
       'sep',
       { label: '退出登录', danger: true, onClick: logout },
     ]) }, h('span', null, u.realName || u.username), h('span', { class: 'muted' }, '▾'))) : null;
@@ -253,11 +253,30 @@ function topbar(active) {
     nav, h('div', { class: 'spacer' }), themeButton(), userBtn);
 }
 
+// The signed-in user's own password (contestants and the admin).
+function passwordDialog() {
+  const cur = h('input', { type: 'password', class: 'full', autocomplete: 'current-password', placeholder: '当前密码' });
+  const pw1 = h('input', { type: 'password', class: 'full', autocomplete: 'new-password', placeholder: '新密码，至少 6 位' });
+  const pw2 = h('input', { type: 'password', class: 'full', autocomplete: 'new-password', placeholder: '再次输入新密码' });
+  const dlg = modal('修改密码', h('form', { class: 'stack', onsubmit: (e) => { e.preventDefault(); dlg.el.querySelector('.modal-foot .primary').click(); } },
+    cur, pw1, pw2, h('button', { type: 'submit', class: 'hidden' })), [
+    { label: '取消' },
+    { label: '修改', primary: true, onClick: async () => {
+      if (!cur.value || !pw1.value) { toast('请填写密码', true); return false; }
+      if (pw1.value !== pw2.value) { toast('两次输入的新密码不一致', true); return false; }
+      await api('PUT', '/api/password', { current: cur.value, password: pw1.value });
+      S.status.user.defaultPassword = false;
+      toast('密码已修改');
+      if (isAdmin() && location.hash.startsWith('#/admin')) route();
+    } },
+  ]);
+}
+
 function shell(active, ...content) {
   clearTimers();
   document.querySelectorAll('.overlay').forEach((o) => o.remove());
   const banner = isAdmin() && S.status.user.defaultPassword
-    ? h('div', { class: 'banner' }, '管理员密码仍是默认值。', h('a', { href: '#/admin/settings/password' }, '修改')) : null;
+    ? h('div', { class: 'banner' }, '管理员密码仍是默认值。', h('a', { onclick: passwordDialog, style: { cursor: 'pointer' } }, '修改')) : null;
   const main = h('main', { class: 'page' }, banner, ...content);
   put($app, topbar(active), main, h('div', { class: 'footer' }, `CodeHub ${S.status.version}`));
   return main;
@@ -669,13 +688,9 @@ async function renderContestForm(id) {
     const select = h('select', { onchange: () => { f.lemon.contest = select.value; } }, h('option', { value: '' }, '不关联'));
     const loadLemon = async (selectName) => {
       try {
-        const list = await api('GET', '/api/admin/lemon/contests');
-        const items = list.map((x) => ({ name: x.name, ended: x.ended }));
-        if (f.lemon.contest && !items.some((x) => x.name === f.lemon.contest)) items.push({ name: f.lemon.contest, ended: false });
-        // an ended LemonServer contest cannot be linked (its time is fixed); the current link stays selectable
-        put(select, h('option', { value: '' }, '不关联'), ...items.map((x) => h('option', {
-          value: x.name, selected: x.name === f.lemon.contest, disabled: x.ended && x.name !== (contest?.lemon?.contest || ''),
-        }, x.ended ? `${x.name}（已结束）` : x.name)));
+        const names = (await api('GET', '/api/admin/lemon/contests')).map((x) => x.name);
+        if (f.lemon.contest && !names.includes(f.lemon.contest)) names.push(f.lemon.contest);
+        put(select, h('option', { value: '' }, '不关联'), ...names.map((n) => h('option', { value: n, selected: n === f.lemon.contest }, n)));
         if (selectName) { select.value = selectName; f.lemon.contest = selectName; }
       } catch (e) {
         put(select, h('option', { value: f.lemon.contest }, f.lemon.contest || '不关联'));
@@ -705,7 +720,7 @@ async function renderContestForm(id) {
       h('div', { class: 'group' },
         row('关联比赛', select, createBtn, lemonErr),
         row('评测', seg, minutesWrap)),
-      h('div', { class: 'section-foot' }, '时间与 LemonServer 同步 · 只测未评测的代码，上次未完成则跳过 · 赛后再全部评测一次'));
+      h('div', { class: 'section-foot' }, '只评测未评测的代码，上次未完成则跳过；比赛结束后再评测一次'));
     f._reloadLemon = loadLemon;
   }
 
@@ -719,10 +734,8 @@ async function renderContestForm(id) {
     let list;
     try { list = await api('GET', '/api/admin/lemon/contests'); } catch (e) { return fail(e); }
     if (!list.length) return toast('LemonServer 上没有比赛', true);
-    if (list.every((x) => x.ended)) return toast('LemonServer 上的比赛都已结束，不能导入', true);
-    const first = list.find((x) => x.name === f.lemon.contest && !x.ended) || list.find((x) => !x.ended);
-    const sel = h('select', { class: 'full' }, list.map((x) => h('option', { value: x.name, disabled: x.ended, selected: x === first },
-      `${x.name}（${x.tasks ?? '?'} 题）` + (x.ended ? ' · 已结束' : ''))));
+    const sel = h('select', { class: 'full' }, list.map((x) => h('option', { value: x.name, selected: x.name === f.lemon.contest },
+      `${x.name}（${x.tasks ?? '?'} 题）`)));
     const withZip = h('input', { type: 'checkbox', checked: true });
     modal('从 LemonServer 导入', h('div', { class: 'stack' }, sel,
       h('label', { class: 'check' }, withZip, '同时导入 down.zip（如有）'),
@@ -730,7 +743,6 @@ async function renderContestForm(id) {
       { label: '取消' },
       { label: '导入', primary: true, onClick: async () => {
         const r = await api('GET', '/api/admin/lemon/contests/' + enc(sel.value));
-        if (r.ended) { toast('该比赛已结束，不能导入', true); return false; }
         if (!r.tasks.length) { toast('该比赛没有试题', true); return false; }
         f.problems = r.tasks.map((t) => ({ name: t.name, title: t.title || t.name }));
         f.lemon.contest = r.name;
@@ -789,8 +801,8 @@ async function renderBoard(id) {
 
   const render = () => {
     const c = b.contest;
-    const ended = c.phase === 'ended';
     const L = b.lemon;
+    const scored = L.linked && L.reachable;
     let submitted = 0, judged = 0;
     for (const r of b.rows) for (const cell of Object.values(r.cells)) { submitted++; if (cell.judged) judged++; }
 
@@ -808,13 +820,22 @@ async function renderBoard(id) {
         h('button', { class: 'small', disabled: L.busy, onclick: () => act('judge') }, '立即评测'),
         h('button', { class: 'small', onclick: () => act('resync') }, '重新同步'),
         h('a', { class: 'btn small primary', href: L.link, target: '_blank' }, '评测结果 ↗')),
-      [L.uploadError && `上传失败：${L.uploadError}`, L.syncError && `同步失败：${L.syncError}`,
+      [L.uploadError && `上传失败：${L.uploadError}`,
         b.missingTasks.length && `LemonServer 中缺少试题：${b.missingTasks.join('、')}`]
         .filter(Boolean).map((t) => h('div', { class: 'danger-text small', style: { marginTop: '6px' } }, t))) : null;
 
+    // the result on LemonServer: score, or the compile state (NS, CE, …) when compiling failed
+    const COMPILE = ['', 'NS', 'CE', 'CTLE', 'IC', 'NG'];
+    const result = (s, p) => {
+      if (s.score === null || s.score === undefined) return null;
+      const full = b.fullScores?.[p.name];
+      const cls = s.compileState ? 'bad' : full && s.score >= full ? 'full' : s.score > 0 ? 'part' : 'zero';
+      return h('span', { class: 'cell-score ' + cls }, s.compileState ? `0 ${COMPILE[s.compileState] || ''}` : s.score);
+    };
     const table = h('table', { class: 'list' },
       h('thead', null, h('tr', null, h('th', null, '账号'), h('th', null, '姓名'),
         c.problems.map((p) => h('th', { class: 'cell' }, p.title !== p.name ? `${p.title} (${p.name})` : p.name)),
+        scored ? h('th', { class: 'cell' }, '总分') : null,
         h('th', { class: 'cell' }, '已提交'))),
       h('tbody', null, b.rows.map((r) => h('tr', null,
         h('td', { class: 'mono' }, r.username), h('td', null, r.realName),
@@ -823,14 +844,15 @@ async function renderBoard(id) {
           if (!s) return h('td', { class: 'cell muted' }, '—');
           let state = null;
           if (s.synced === false) state = h('span', { class: 'cell-state muted' }, '待上传');
-          else if (s.judged === true) state = h('span', { class: 'cell-state ok-text' }, '已评测');
+          else if (s.judged === true) state = result(s, p) || h('span', { class: 'cell-state ok-text' }, '已评测');
           else if (s.judged === false) state = h('span', { class: 'cell-state warn-text' }, '未评测');
           return h('td', {
-            class: 'cell has' + (ended ? ' clickable' : ''),
-            title: `${fmtTime(s.time)} · 第 ${s.count} 次提交`,
-            onclick: ended ? () => adminSource(c, r, p) : null,
+            class: 'cell has clickable',
+            title: `${fmtTime(s.time)} · 第 ${s.count} 次提交 · 点击查看代码`,
+            onclick: () => adminSource(c, r, p),
           }, h('span', { class: 'cell-size' }, fmtSize(s.size)), state);
         }),
+        scored ? h('td', { class: 'cell' }, r.total === null ? h('span', { class: 'muted' }, '—') : h('b', null, r.total)) : null,
         h('td', { class: 'cell muted' }, `${Object.keys(r.cells).length} / ${c.problems.length}`)))));
 
     put(body, 
@@ -839,12 +861,12 @@ async function renderBoard(id) {
         h('span', { class: 'badge ' + PHASE_BADGE[c.phase] }, PHASE[c.phase]),
         h('span', { class: 'muted' }, fmtRange(c.startTime, c.endTime)),
         h('div', { class: 'right' },
-          ended ? h('a', { class: 'btn', href: `/api/admin/contests/${c.id}/archive.zip` }, '下载全部代码') : null,
+          submitted ? h('a', { class: 'btn', href: `/api/admin/contests/${c.id}/archive.zip` }, '下载全部代码') : null,
           h('button', { onclick: () => go(`#/admin/c/${c.id}/edit`) }, '编辑'))),
       lemonCard,
       b.rows.length ? h('div', { class: 'table-wrap' }, table) : h('div', { class: 'card empty' }, '没有可参赛的用户'),
       h('div', { class: 'section-foot' },
-        `${b.rows.length} 名选手 · 提交 ${submitted}` + (L.linked && L.reachable ? ` · 已评测 ${judged}` : '') + (ended ? ' · 点击格子查看代码' : ' · 赛后可查看代码')));
+        `${b.rows.length} 名选手 · 提交 ${submitted}` + (scored ? ` · 已评测 ${judged}` : '') + (submitted ? ' · 点击格子查看代码' : '')));
   };
 
   const reload = async () => {
@@ -964,7 +986,7 @@ async function renderUsers() {
         reload();
       } },
     ], { left: h('button', { class: 'danger', onclick: async () => {
-      if (!(await confirmBox('删除用户', `确定删除 ${u.username}？已提交的代码文件会保留。`, '删除', true))) return;
+      if (!(await confirmBox('删除用户', `删除 ${u.username}？已提交的代码会保留。`, '删除', true))) return;
       try { await api('POST', '/api/admin/users/batch', { ids: [u.id], action: 'delete' }); document.querySelector('.overlay')?.remove(); reload(); } catch (e) { fail(e); }
     } }, '删除') });
   };
@@ -984,7 +1006,7 @@ async function renderUsers() {
   };
 
   const batchDelete = async () => {
-    if (!(await confirmBox('删除用户', `确定删除选中的 ${sel.size} 名用户？已提交的代码文件会保留。`, '删除', true))) return;
+    if (!(await confirmBox('删除用户', `删除选中的 ${sel.size} 名用户？已提交的代码会保留。`, '删除', true))) return;
     try {
       await api('POST', '/api/admin/users/batch', { ids: [...sel], action: 'delete' });
       sel.clear();
@@ -1043,7 +1065,7 @@ async function renderUsers() {
       } }]);
     };
     const deleteGroup = async (g) => {
-      if (!(await confirmBox('删除分组', `确定删除分组“${g.name}”？用户不会被删除。`, '删除', true))) return;
+      if (!(await confirmBox('删除分组', `删除分组“${g.name}”？用户会保留。`, '删除', true))) return;
       try { await api('DELETE', '/api/admin/groups/' + g.id); await reload(); draw(); } catch (e) { fail(e); }
     };
     draw();
@@ -1090,7 +1112,7 @@ async function renderSettings(section) {
       try {
         const r = await api('POST', '/api/admin/lemon/test', { url: lurl.value.trim(), apiKey: lkey.value.trim() });
         lstate.className = r.outdated ? 'small danger-text' : 'small ok-text';
-        lstate.textContent = r.outdated ? `LemonServer ${r.version} 版本过旧，需要 0.1.3 或更高` : `已连接 LemonServer ${r.version} · ${r.contests} 个比赛`;
+        lstate.textContent = r.outdated ? `LemonServer ${r.version} 版本过旧，需要 0.1.6 或更高` : `已连接 LemonServer ${r.version} · ${r.contests} 个比赛`;
       } catch (e) {
         lstate.className = 'small danger-text';
         lstate.textContent = e.message;
@@ -1132,7 +1154,7 @@ async function renderSettings(section) {
 
       h('div', { class: 'section-title' }, 'LemonServer'),
       h('div', { class: 'group' }, row('API 地址', lurl), row('网页地址', lpub), row('API Key', lkey)),
-      h('div', { class: 'section-foot' }, '填浏览器中打开 LemonServer 的地址；API Key 在 LemonServer“设置 → 令牌与 API Key”中创建'),
+      h('div', { class: 'section-foot' }, 'API Key 在 LemonServer“设置 → 令牌与 API Key”中创建；网页地址只用于“评测结果”链接'),
       h('div', { class: 'flex', style: { marginTop: '8px' } }, lstate, h('div', { class: 'grow' }),
         h('button', { class: 'small', onclick: testLemon }, '测试连接'),
         h('button', { class: 'small primary', onclick: saveLemon }, '保存')),

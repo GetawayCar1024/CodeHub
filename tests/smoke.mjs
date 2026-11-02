@@ -74,7 +74,7 @@ async function waitFor(what, fn, timeout = 60000) {
 try {
   const admin = client();
   const st = await admin('GET', '/api/status');
-  assert.equal(st.version, '0.1.0');
+  assert.equal(st.version, '0.1.1');
   assert.equal(st.user, null);
 
   step('admin login, CSRF header');
@@ -195,7 +195,21 @@ try {
   await u2('POST', `/api/contests/${A.id}/submit`, { problem: 'aplusb', code: WA });
   assert.equal(fs.readFileSync(path.join(dataDir, 'submissions', '测试赛', 'SC-00001', 'aplusb.cpp'), 'utf8'), AC);
   await admin('PUT', '/api/admin/contests/' + A.id, { subFolder: true }, { expect: 409 });
-  await admin('GET', `/api/admin/contests/${A.id}/source/${byName['SC-00001'].id}/aplusb`, undefined, { expect: 403 });
+  // the admin sees the code during the contest as well
+  assert.equal((await admin('GET', `/api/admin/contests/${A.id}/source/${byName['SC-00001'].id}/aplusb`)).code, AC);
+  assert.equal((await admin('GET', `/api/admin/contests/${A.id}/archive.zip`)).readUInt32LE(0), 0x04034b50);
+
+  step('contestants change their own password');
+  const u1b = client();
+  await u1b('POST', '/api/login', { username: 'SC-00001', password: '123' });
+  await u1('PUT', '/api/password', { current: 'wrong', password: 'abcdef' }, { expect: 403 });
+  await u1('PUT', '/api/password', { current: '123', password: 'abc' }, { expect: 400 });
+  await u1('PUT', '/api/password', { current: '123', password: 'new-pass-1' });
+  await u1('GET', '/api/contests/' + A.id); // this session stays signed in
+  await u1b('GET', '/api/contests/' + A.id, undefined, { expect: 401 }); // the other one is signed out
+  await client()('POST', '/api/login', { username: 'SC-00001', password: '123' }, { expect: 401 });
+  await client()('POST', '/api/login', { username: 'SC-00001', password: 'new-pass-1' });
+  await client()('PUT', '/api/password', { current: 'x', password: 'abcdef' }, { expect: 401 });
 
   let board = await admin('GET', `/api/admin/contests/${A.id}/board`);
   assert.equal(board.rows.length, 2); // users of 高一
@@ -207,11 +221,10 @@ try {
     await admin('PUT', '/api/admin/contests/' + A.id, { problems: [{ name: 'aplusb', title: 'A+B' }], lemon: { contest: lemonContest, interval: 0 } });
     await admin('POST', `/api/admin/contests/${A.id}/downzip/from-lemon`, {});
     const C = '/api/contests/' + lemonContest;
-    const remote = await waitFor('time sync', async () => {
-      const r = await lemon('GET', C, { token: lemonKey });
-      return r.startTime === app.ctx.contest(A.id).startTime && r.endTime === app.ctx.contest(A.id).endTime && r;
-    });
-    assert.ok(remote.running);
+    // LemonServer has no contest time: nothing is sent there
+    await sleep(1500);
+    const remote = await lemon('GET', C, { token: lemonKey });
+    assert.ok(!('startTime' in remote) && !('running' in remote), JSON.stringify(remote).slice(0, 200));
 
     const judgedOf = (b, who) => b.rows.find((r) => r.username === who).cells.aplusb;
     // existing submissions are uploaded on linking; a new submission triggers a run
@@ -221,6 +234,10 @@ try {
       return !b.lemon.busy && judgedOf(b, 'SC-00001').judged && judgedOf(b, 'SC-00002').judged && b;
     });
     assert.equal(board.lemon.pendingUploads, 0);
+    // the results during the contest, as afterwards
+    assert.deepEqual([judgedOf(board, 'SC-00001').score, judgedOf(board, 'SC-00002').score], [100, 75]);
+    assert.equal(board.rows.find((r) => r.username === 'SC-00001').total, 100);
+    assert.equal(board.fullScores.aplusb, 100);
 
     step('resubmission is judged again, queued behind another contest');
     const O = '/api/contests/' + lemonContest + 'Other';
@@ -245,17 +262,13 @@ try {
     const src = await lemon('GET', C + '/files', { query: { root: 'source', path: 'SC-00001' }, token: lemonKey });
     assert.ok(src.entries.some((e) => e.name === 'aplusb.cpp' && e.size === Buffer.byteLength(WA)));
 
-    step('time changed on LemonServer is followed');
-    const newEnd = Date.now() + 6000;
-    await lemon('PUT', C, { json: { startTime: app.ctx.contest(A.id).startTime, endTime: newEnd }, token: lemonKey });
-    await waitFor('pull time', async () => app.ctx.contest(A.id).endTime === newEnd, 40000);
-
-    step('after the contest: one more run judging everything');
+    step('after the contest: one more run judging what is unjudged');
+    await admin('PUT', '/api/admin/contests/' + A.id, { endTime: Date.now() + 6000 });
     board = await waitFor('final run', async () => {
       const b = await admin('GET', `/api/admin/contests/${A.id}/board`);
       return b.lemon.finalDone && b;
     }, 90000);
-    assert.equal(board.lemon.history[0].mode, 'all');
+    assert.deepEqual([board.lemon.history[0].kind, board.lemon.history[0].mode], ['final', 'unjudged']);
     const res = await lemon('GET', C, { token: lemonKey });
     const scores = Object.fromEntries(res.contestants.map((x) => [x.name, x.totalScore]));
     assert.deepEqual(scores, { 'SC-00001': 75, 'SC-00002': 75 });

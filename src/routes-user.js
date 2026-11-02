@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { fail, readJson, sendFile } from './http.js';
-import { checkPassword } from './util.js';
+import { checkPassword, hashPassword } from './util.js';
 import { VERSION } from './version.js';
 
 const MIN = 60000;
@@ -38,6 +38,19 @@ export function paginate(req, list) {
 
 export function publicUser(u) {
   return { id: u.id, username: u.username, realName: u.realName, role: u.role, groups: u.groups || [] };
+}
+
+// {current, password}: the signed-in user's own password; other sessions of the user are signed out.
+export async function changePassword(ctx, req) {
+  const body = await readJson(req);
+  if (!checkPassword(String(body.current ?? ''), req.user.passwordHash)) fail(403, '当前密码错误');
+  const pw = String(body.password ?? '');
+  if (pw.length < 6) fail(400, '新密码至少 6 位');
+  req.user.passwordHash = req.user.role === 'admin' ? hashPassword(pw, 16384) : hashPassword(pw);
+  delete req.user.defaultPassword;
+  ctx.dropUserSessions(req.user.id, req.sid);
+  ctx.log('password changed:', req.user.username);
+  return { ok: true };
 }
 
 export function setupUserRoutes(router, ctx) {
@@ -82,6 +95,11 @@ export function setupUserRoutes(router, ctx) {
   router.post('/api/logout', (req, res) => {
     ctx.dropSession(req, res);
     return { ok: true };
+  });
+
+  router.put('/api/password', (req) => {
+    if (!req.user) fail(401, '请先登录');
+    return changePassword(ctx, req);
   });
 
   router.get('/api/manual', (req, res) => {

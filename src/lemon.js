@@ -62,7 +62,7 @@ export class LemonClient {
 }
 
 // Keeps CodeHub contests in step with their LemonServer contests: uploads submissions into
-// source/, keeps the contest time identical and starts "judge unjudged" runs on schedule.
+// source/ and starts "judge unjudged" runs on schedule (by CodeHub's contest time; LemonServer has none).
 export class LemonLink {
   constructor(ctx) {
     this.ctx = ctx;
@@ -77,7 +77,7 @@ export class LemonLink {
 
   rt(c) {
     if (!this.runtime.has(c.id))
-      this.runtime.set(c.id, { busy: false, pending: false, chain: Promise.resolve(), lastSyncAt: 0, task: null, history: [] });
+      this.runtime.set(c.id, { busy: false, pending: false, chain: Promise.resolve(), task: null, history: [] });
     return this.runtime.get(c.id);
   }
 
@@ -168,22 +168,18 @@ export class LemonLink {
   // Called when the link changes (or the problems / sub-folder setting change).
   relink(c) {
     const st = this.state(c);
-    delete st.syncedStart;
-    delete st.syncedEnd;
     st.finalDone = false;
     st.linkedAt = Date.now();
     st.slotBase = null;
     const rt = this.rt(c);
-    rt.lastSyncAt = 0;
     rt.remote = null;
     rt.needTasks = true;
     this.markAllPending(c);
   }
 
+  // The contest ends later than before: the run after the contest is due again.
   timesChanged(c) {
-    const st = this.state(c);
-    if (c.endTime > Date.now()) st.finalDone = false;
-    if (this.linked(c)) this.syncTime(c).catch((e) => { this.rt(c).syncError = e.message; });
+    if (c.endTime > Date.now()) this.state(c).finalDone = false;
   }
 
   async ensureTasks(c) {
@@ -194,46 +190,6 @@ export class LemonLink {
         await this.client.call('PUT', this.cpath(c) + '/tasks/' + i, { json: { subFolderCheck: !!c.subFolder } });
     }
     this.rt(c).needTasks = false;
-  }
-
-  async syncTime(c) {
-    const st = this.state(c);
-    const rt = this.rt(c);
-    rt.lastSyncAt = Date.now();
-    const remote = await this.client.call('GET', this.cpath(c));
-    this.cache(c, remote);
-    const rs = remote.startTime ?? null;
-    const re = remote.endTime ?? null;
-    if (rs === c.startTime && re === c.endTime) {
-      st.syncedStart = rs;
-      st.syncedEnd = re;
-    } else if (Date.now() < c.endTime && st.syncedStart !== undefined && rs !== null && re !== null && re > rs &&
-               (rs !== st.syncedStart || re !== st.syncedEnd)) {
-      // changed on the LemonServer side: follow it
-      this.ctx.log(`contest ${c.name}: time changed on LemonServer`);
-      c.startTime = rs;
-      c.endTime = re;
-      st.syncedStart = rs;
-      st.syncedEnd = re;
-      if (re > Date.now()) st.finalDone = false;
-    } else if (re !== null && re <= Date.now()) {
-      // ended on LemonServer: its time is fixed there and can no longer be synced
-      rt.syncError = 'LemonServer 上的该比赛已结束，时间无法同步';
-      return;
-    } else {
-      try {
-        await this.client.call('PUT', this.cpath(c), { json: { startTime: c.startTime, endTime: c.endTime } });
-      } catch (e) {
-        // the contest is being judged or queued on LemonServer and cannot be changed now: retry soon
-        if (!e.body?.busy) throw e;
-        rt.lastSyncAt = Date.now() - 10000;
-        return;
-      }
-      st.syncedStart = c.startTime;
-      st.syncedEnd = c.endTime;
-    }
-    rt.syncError = null;
-    this.ctx.store.save();
   }
 
   cache(c, remote) {
@@ -267,7 +223,7 @@ export class LemonLink {
   }
 
   // mode "unjudged": the cells LemonServer reports as not judged (new or re-submitted code);
-  // mode "all": every submission (the extra run after the contest).
+  // mode "all": every submission.
   async runTask(c, kind, mode = 'unjudged') {
     const rt = this.rt(c);
     if (rt.busy) return 'busy';
@@ -349,8 +305,6 @@ export class LemonLink {
         rt.tasksTriedAt = now;
         this.ensureTasks(c).catch((e) => { rt.tasksError = e.message; });
       }
-      if (!st.finalDone && now - rt.lastSyncAt > 15000)
-        this.syncTime(c).catch((e) => { rt.syncError = e.message; });
 
       const iv = c.lemon.interval;
       if (now >= c.startTime && now < c.endTime) {
@@ -372,7 +326,7 @@ export class LemonLink {
           this.kick(c);
         }
       } else if (now >= c.endTime && !st.finalDone && !rt.busy && now - (rt.finalTriedAt || 0) > 10000) {
-        // after the contest: once the last task has finished (rt.busy is false), judge everything once more
+        // after the contest: once the last task has finished (rt.busy is false), judge what is still unjudged
         rt.finalTriedAt = now;
         this.runTask(c, 'final').then((r) => {
           if (r === 'done') {
@@ -405,9 +359,7 @@ export class LemonLink {
       history: rt.history.slice(0, 5),
       pendingUploads: Object.keys(this.pendingOf(c)).length,
       uploadError: rt.uploadError || null,
-      syncError: rt.syncError || null,
       finalDone: !!st.finalDone,
-      remoteTime: remote ? { startTime: remote.startTime ?? null, endTime: remote.endTime ?? null } : null,
     };
   }
 }

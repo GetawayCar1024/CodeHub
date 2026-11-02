@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { fail, readJson, receiveFile, sendBuffer, sendFile } from './http.js';
-import { allowedFor, contestPhase, paginate, sortContests } from './routes-user.js';
-import { checkPassword, hashPassword, isValidName, isValidProblemName, sameName, toMs } from './util.js';
+import { allowedFor, changePassword, contestPhase, paginate, sortContests } from './routes-user.js';
+import { hashPassword, isValidName, isValidProblemName, sameName, toMs } from './util.js';
 import { createZip } from './zip.js';
 import { normalizeUrl } from './lemon.js';
 
@@ -43,16 +43,7 @@ export function setupAdminRoutes(router, ctx) {
 
   // ------------------------------------------------------------------ account
 
-  route('PUT', '/api/admin/password', async (req) => {
-    const body = await readJson(req);
-    if (!checkPassword(String(body.current ?? ''), req.user.passwordHash)) fail(403, '当前密码错误');
-    const pw = String(body.password ?? '');
-    if (pw.length < 6) fail(400, '新密码至少 6 位');
-    req.user.passwordHash = hashPassword(pw, 16384);
-    delete req.user.defaultPassword;
-    ctx.dropUserSessions(req.user.id, req.sid);
-    return { ok: true };
-  });
+  route('PUT', '/api/admin/password', (req) => changePassword(ctx, req));
 
   // ------------------------------------------------------------------ settings
 
@@ -150,19 +141,16 @@ export function setupAdminRoutes(router, ctx) {
     const st = await lemonCall('GET', '/api/auth/status', { cfg });
     if (!st.authenticated) fail(400, 'API Key 无效');
     const list = await lemonCall('GET', '/api/contests', { cfg });
-    // the judging queue (POST /judge returning a job, /api/judge-queue) is needed
+    // the judging queue (0.1.3) and no contest time hiding the results from the admin (0.1.6) are needed
     const [a = 0, b = 0, c = 0] = String(st.version || '').split('.').map(Number);
-    const outdated = a * 1e6 + b * 1e3 + c < 1003;
+    const outdated = a * 1e6 + b * 1e3 + c < 1006;
     return { ok: true, version: st.version, outdated, contests: list.contests.length, setupRequired: st.setupRequired };
   });
 
 
-  // A LemonServer contest whose time is over cannot be linked: its time can no longer be changed there.
-  const lemonEnded = (x) => x.endTime !== null && x.endTime !== undefined && x.endTime <= Date.now();
-
   route('GET', '/api/admin/lemon/contests', async () => {
     const list = await lemonCall('GET', '/api/contests');
-    return list.contests.map((x) => ({ name: x.name, title: x.title, tasks: x.tasks, running: x.running, startTime: x.startTime, endTime: x.endTime, ended: lemonEnded(x) }));
+    return list.contests.map((x) => ({ name: x.name, title: x.title, tasks: x.tasks }));
   });
 
   route('POST', '/api/admin/lemon/contests', async (req) => {
@@ -180,18 +168,14 @@ export function setupAdminRoutes(router, ctx) {
       title: r.title,
       tasks: r.tasks.map((t) => ({ name: t.sourceFileName, title: t.problemTitle })),
       downZip: r.downZip || null,
-      startTime: r.startTime ?? null,
-      endTime: r.endTime ?? null,
-      ended: lemonEnded(r),
     };
   });
 
-  // Before linking a contest to another LemonServer contest: it must exist and must not have ended.
+  // Before linking a contest to another LemonServer contest: it must exist.
   const checkLemonLink = async (c, body) => {
     const name = String(body.lemon?.contest ?? '').trim();
     if (!('lemon' in body) || !name || name === (c?.lemon?.contest || '') || !ctx.lemon.client.configured()) return;
-    const r = await lemonCall('GET', ctx.lemon.client.contestPath(name));
-    if (lemonEnded(r)) fail(409, 'LemonServer 上的该比赛已结束，不能关联');
+    await lemonCall('GET', ctx.lemon.client.contestPath(name));
   };
 
   // ------------------------------------------------------------------ groups
@@ -376,7 +360,7 @@ export function setupAdminRoutes(router, ctx) {
       const e = toMs(body.endTime ?? c.endTime);
       if (!Number.isFinite(s) || !Number.isFinite(e)) fail(400, '请设置开始和结束时间');
       if (e <= s) fail(400, '结束时间须晚于开始时间');
-      // same rule as LemonServer: once a contest has ended its time is fixed
+      // once a contest has ended its time is fixed
       if (!isNew && contestPhase(c) === 'ended' && (s !== c.startTime || e !== c.endTime))
         fail(409, '比赛已结束，时间不能再修改');
       // a time that is set or changed cannot be in the past (the form has minute precision)
@@ -437,8 +421,7 @@ export function setupAdminRoutes(router, ctx) {
       if (old.subFolder !== c.subFolder || JSON.stringify(old.problems) !== JSON.stringify(c.problems))
         ctx.lemon.rt(c).needTasks = true;
     }
-    if (!old || old.startTime !== c.startTime || old.endTime !== c.endTime || ctx.lemon.rt(c).lastSyncAt === 0)
-      ctx.lemon.timesChanged(c);
+    if (!old || old.endTime !== c.endTime) ctx.lemon.timesChanged(c);
   };
 
   // ?page=1&pageSize=20, ordered by sortContests()
@@ -527,7 +510,8 @@ export function setupAdminRoutes(router, ctx) {
     return contestJson(c);
   });
 
-  // Submissions overview: code size per cell, plus "judged" from LemonServer when linked.
+  // Submissions overview: code size per cell; when linked, also whether it is judged and its result on
+  // LemonServer (the same during the contest as afterwards).
   route('GET', '/api/admin/contests/:id/board', async (req, res, p) => {
     const c = getContest(p.id);
     const subs = data.submissions[c.id] || {};
@@ -541,34 +525,36 @@ export function setupAdminRoutes(router, ctx) {
     const rows = users.map((u) => {
       const ct = remoteMap.get(u.username);
       const cells = {};
+      let total = null;
       for (const pr of c.problems) {
         const s = subs[u.id]?.[pr.name];
-        if (!s) continue;
         const idx = taskIndex.get(pr.name);
+        if (!s) continue;
+        const t = remote && ct && idx !== undefined ? ct.tasks[idx] : null;
+        const judged = !!t?.judged && t.score >= 0;
+        if (judged) total = (total ?? 0) + t.score;
         cells[pr.name] = {
           ...s,
           synced: lemon.linked ? !pending[u.id + '|' + pr.name] : null,
-          judged: remote ? !!(ct && idx !== undefined && ct.tasks[idx]?.judged) : null,
+          judged: remote ? !!t?.judged : null,
+          score: judged ? t.score : null,
+          compileState: judged ? t.compileState ?? 0 : null,
         };
       }
-      return { id: u.id, username: u.username, realName: u.realName, cells };
+      return { id: u.id, username: u.username, realName: u.realName, cells, total };
     });
     return {
       contest: contestJson(c),
       serverTime: Date.now(),
       rows,
       lemon,
+      fullScores: Object.fromEntries((remote?.tasks || []).map((t) => [t.sourceFileName, t.totalScore])),
       missingTasks: remote ? c.problems.filter((pr) => !taskIndex.has(pr.name)).map((pr) => pr.name) : [],
     };
   });
 
-  const ensureEnded = (c) => {
-    if (contestPhase(c) !== 'ended') fail(403, '比赛结束后才能查看代码');
-  };
-
   route('GET', '/api/admin/contests/:id/source/:uid/:problem', (req, res, p) => {
     const c = getContest(p.id);
-    ensureEnded(c);
     const u = getUser(p.uid);
     const s = data.submissions[c.id]?.[u.id]?.[p.problem] || fail(404, '尚未提交');
     const file = ctx.submissionFile(c, u.username, p.problem);
@@ -578,7 +564,6 @@ export function setupAdminRoutes(router, ctx) {
 
   route('GET', '/api/admin/contests/:id/archive.zip', (req, res, p) => {
     const c = getContest(p.id);
-    ensureEnded(c);
     const entries = [];
     for (const [uid, probs] of Object.entries(data.submissions[c.id] || {})) {
       const u = ctx.user(uid);
@@ -607,7 +592,6 @@ export function setupAdminRoutes(router, ctx) {
     ctx.lemon.rt(c).needTasks = true;
     try {
       await ctx.lemon.ensureTasks(c);
-      await ctx.lemon.syncTime(c);
     } catch (e) { fail(502, e.message); }
     const ok = await ctx.lemon.flushUploads(c);
     if (!ok) fail(502, '上传失败：' + (ctx.lemon.rt(c).uploadError || ''));

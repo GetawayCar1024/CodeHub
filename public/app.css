@@ -261,6 +261,10 @@ table.list tbody tr:hover td.cell.has { background: color-mix(in srgb, var(--gre
 table.list td.cell.clickable { cursor: pointer; }
 .cell-size { font-variant-numeric: tabular-nums; }
 .cell-state { display: block; font-size: 11.5px; margin-top: 1px; }
+.cell-score { display: block; font-size: 12px; font-weight: 600; margin-top: 1px; font-variant-numeric: tabular-nums; }
+.cell-score.full { color: var(--green); }
+.cell-score.part { color: var(--orange); }
+.cell-score.zero, .cell-score.bad { color: var(--red); }
 
 .empty { padding: 48px 20px; text-align: center; color: var(--muted); }
 
