@@ -74,7 +74,7 @@ async function waitFor(what, fn, timeout = 60000) {
 try {
   const admin = client();
   const st = await admin('GET', '/api/status');
-  assert.equal(st.version, '0.1.1');
+  assert.equal(st.version, '0.1.2');
   assert.equal(st.user, null);
 
   step('admin login, CSRF header');
@@ -168,6 +168,7 @@ try {
   assert.equal(cd.password, null);
   assert.equal((await u1('GET', `/api/contests/${A.id}/down.zip`)).toString(), 'PK-test');
   await u1('POST', `/api/contests/${A.id}/submit`, { problem: 'aplusb', code: 'int main(){}' }, { expect: 403 });
+  assert.equal((await u1('POST', `/api/contests/${A.id}/finish`, undefined, { expect: 403 })).error, '比赛尚未开始');
   await admin('GET', '/api/contests', undefined, { expect: 403 });
 
   const AC = '#include <cstdio>\nint main(){freopen("aplusb.in","r",stdin);freopen("aplusb.out","w",stdout);long long a,b;scanf("%lld%lld",&a,&b);printf("%lld\\n",a+b);}\n';
@@ -215,6 +216,22 @@ try {
   assert.equal(board.rows.length, 2); // users of 高一
   assert.equal(board.rows[0].cells.aplusb.size, Buffer.byteLength(AC));
   assert.equal(board.lemon.linked, false);
+
+  step('finishing early: no more submissions, the contest page stays open; the admin sees it and can undo it');
+  const fin = await u2('POST', `/api/contests/${A.id}/finish`);
+  assert.ok(fin.finishedAt);
+  assert.equal((await u2('POST', `/api/contests/${A.id}/finish`)).finishedAt, fin.finishedAt); // once
+  assert.equal((await u2('POST', `/api/contests/${A.id}/submit`, { problem: 'aplusb', code: AC }, { expect: 403 })).error, '你已结束比赛，不能再提交');
+  cd = await u2('GET', '/api/contests/' + A.id);
+  assert.deepEqual([cd.phase, cd.finishedAt, cd.password], ['running', fin.finishedAt, '456']);
+  assert.equal((await u2('GET', `/api/contests/${A.id}/source/aplusb`)).code, WA);
+  assert.deepEqual((await u2('GET', '/api/contests')).contests.map((c) => c.id), [A.id]);
+  assert.equal((await u1('GET', '/api/contests/' + A.id)).finishedAt, null); // only this contestant
+  board = await admin('GET', `/api/admin/contests/${A.id}/board`);
+  assert.deepEqual(board.rows.map((r) => [r.username, r.finishedAt]), [['SC-00001', null], ['SC-00002', fin.finishedAt]]);
+  await admin('DELETE', `/api/admin/contests/${A.id}/finished/${byName['SC-00002'].id}`);
+  assert.equal((await u2('GET', '/api/contests/' + A.id)).finishedAt, null);
+  await u2('POST', `/api/contests/${A.id}/submit`, { problem: 'aplusb', code: WA }); // can submit again
 
   if (LEMON) {
     step('link to LemonServer afterwards (judge on every submission)');

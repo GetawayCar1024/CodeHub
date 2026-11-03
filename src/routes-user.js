@@ -135,6 +135,7 @@ export function setupUserRoutes(router, ctx) {
       password: phase === 'running' ? c.downZipPassword || '' : null,
       manual: !!data.settings.manual,
       maxCodeKiB: data.settings.maxCodeKiB,
+      finishedAt: data.finished[c.id]?.[user.id] ?? null,
       problems: c.problems.map((pr) => ({ name: pr.name, title: pr.title || pr.name, submission: subs[pr.name] || null })),
       user: { username: user.username, realName: user.realName, groups: (user.groups || []).map((g) => data.groups.find((x) => x.id === g)?.name).filter(Boolean) },
     };
@@ -150,6 +151,7 @@ export function setupUserRoutes(router, ctx) {
     const { c, user, phase } = openContest(req, p.id);
     const body = await readJson(req, data.settings.maxCodeKiB * 1024 * 2 + 4096);
     if (phase !== 'running') fail(403, phase === 'before' ? '比赛尚未开始' : '比赛已结束');
+    if (data.finished[c.id]?.[user.id]) fail(403, '你已结束比赛，不能再提交');
     const problem = c.problems.find((x) => x.name === body.problem);
     if (!problem) fail(404, '题目不存在');
     if (typeof body.code !== 'string' || !body.code.trim()) fail(400, '代码为空');
@@ -166,6 +168,19 @@ export function setupUserRoutes(router, ctx) {
     ctx.store.save();
     ctx.lemon.onSubmit(c, user, problem.name);
     return { submission: mine[problem.name] };
+  });
+
+  // Finish the contest early: no more submissions, the contest page stays open until the contest ends.
+  router.post('/api/contests/:id/finish', (req, res, p) => {
+    const { c, user, phase } = openContest(req, p.id);
+    if (phase !== 'running') fail(403, phase === 'before' ? '比赛尚未开始' : '比赛已结束');
+    const mine = (data.finished[c.id] ??= {});
+    if (!mine[user.id]) {
+      mine[user.id] = Date.now();
+      ctx.store.save();
+      ctx.log('finished early:', c.name, user.username);
+    }
+    return { finishedAt: mine[user.id] };
   });
 
   router.get('/api/contests/:id/source/:problem', (req, res, p) => {

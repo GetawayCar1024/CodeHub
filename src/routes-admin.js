@@ -465,6 +465,7 @@ export function setupAdminRoutes(router, ctx) {
     const c = getContest(p.id);
     data.contests = data.contests.filter((x) => x !== c);
     delete data.submissions[c.id];
+    delete data.finished[c.id];
     delete data.lemonState[c.id];
     delete data.lemonPending[c.id];
     fs.rmSync(path.dirname(ctx.downZipFile(c)), { recursive: true, force: true });
@@ -541,7 +542,7 @@ export function setupAdminRoutes(router, ctx) {
           compileState: judged ? t.compileState ?? 0 : null,
         };
       }
-      return { id: u.id, username: u.username, realName: u.realName, cells, total };
+      return { id: u.id, username: u.username, realName: u.realName, cells, total, finishedAt: data.finished[c.id]?.[u.id] ?? null };
     });
     return {
       contest: contestJson(c),
@@ -551,6 +552,18 @@ export function setupAdminRoutes(router, ctx) {
       fullScores: Object.fromEntries((remote?.tasks || []).map((t) => [t.sourceFileName, t.totalScore])),
       missingTasks: remote ? c.problems.filter((pr) => !taskIndex.has(pr.name)).map((pr) => pr.name) : [],
     };
+  });
+
+  // Undo a contestant's early finish (e.g. a click by mistake): they can submit again.
+  route('DELETE', '/api/admin/contests/:id/finished/:uid', (req, res, p) => {
+    const c = getContest(p.id);
+    const u = getUser(p.uid);
+    if (data.finished[c.id]?.[u.id]) {
+      delete data.finished[c.id][u.id];
+      ctx.store.save();
+      ctx.log('early finish undone:', c.name, u.username);
+    }
+    return { ok: true };
   });
 
   route('GET', '/api/admin/contests/:id/source/:uid/:problem', (req, res, p) => {

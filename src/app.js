@@ -31,6 +31,8 @@ const DEFAULTS = {
   groups: [],
   contests: [],
   submissions: {},
+  // contest id -> user id -> when the contestant finished the contest early
+  finished: {},
   sessions: {},
   lemonState: {},
   lemonPending: {},

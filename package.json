@@ -1,6 +1,6 @@
 {
   "name": "codehub",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "CodeHub：信息学竞赛程序回收系统，可与 LemonServer 联动评测",
   "type": "module",
   "main": "server.js",

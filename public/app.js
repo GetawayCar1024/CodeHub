@@ -450,7 +450,10 @@ async function renderContest(id) {
             h('li', null, h('span', { class: 'k' }, '账号'), c.user.username),
             c.user.groups.length ? h('li', null, h('span', { class: 'k' }, '分组'), c.user.groups.join('、')) : null,
             h('li', null, h('span', { class: 'k' }, '时间'), fmtRange(c.startTime, c.endTime))),
-          h('button', { style: { marginTop: '12px' }, onclick: () => refresh(true) }, '刷新页面')),
+          h('div', { class: 'flex', style: { marginTop: '12px' } },
+            h('button', { onclick: () => refresh(true) }, '刷新页面'),
+            running && !c.finishedAt ? h('button', { class: 'danger', onclick: finishEarly }, '提前结束比赛') : null),
+          c.finishedAt ? h('div', { class: 'finished-note' }, `你已于 ${fmtTime(c.finishedAt, false).slice(6)} 结束比赛，不能再提交`) : null),
         h('ul', { class: 'steps' },
           step(0, '下载考生手册并仔细阅读', c.manual ? h('a', { href: '/api/manual', target: '_blank' }, '下载') : h('span', { class: 'muted' }, '暂无考生手册')),
           step(1, '下载试题包并解压', c.downZip ? h('a', { href: `/api/contests/${c.id}/down.zip` }, '下载') : h('span', { class: 'muted' }, '暂无 down.zip')),
@@ -474,7 +477,7 @@ async function renderContest(id) {
           h('div', null, '代码长度：', `${s.size} 字节`),
         ] : h('div', { class: 'muted' }, '尚未提交')),
         h('div', { class: 'actions' },
-          h('button', { class: 'primary small', disabled: !running, onclick: () => submitDialog(p) }, '提交代码'),
+          h('button', { class: 'primary small', disabled: !running || !!c.finishedAt, onclick: () => submitDialog(p) }, '提交代码'),
           s ? h('button', { class: 'small', onclick: () => viewSource(p) }, '查看代码') : null));
     }));
   };
@@ -485,6 +488,15 @@ async function renderContest(id) {
     if (phase !== c.phase) return refresh();
     lblEl.textContent = phase === 'before' ? '距离开始' : phase === 'running' ? '距离结束' : '已结束';
     timeEl.textContent = phase === 'before' ? fmtDuration(c.startTime - t) : phase === 'running' ? fmtDuration(c.endTime - t) : '00:00:00';
+  };
+
+  const finishEarly = async () => {
+    if (!(await confirmBox('提前结束比赛', '结束后不能再提交代码，但仍可进入本页查看已提交的代码。确定结束？', '结束比赛', true))) return;
+    try {
+      await api('POST', `/api/contests/${c.id}/finish`);
+      toast('已结束比赛');
+      refresh();
+    } catch (e) { fail(e); }
   };
 
   const refresh = async (manual) => {
@@ -803,6 +815,7 @@ async function renderBoard(id) {
     const c = b.contest;
     const L = b.lemon;
     const scored = L.linked && L.reachable;
+    const finished = b.rows.filter((r) => r.finishedAt).length;
     let submitted = 0, judged = 0;
     for (const r of b.rows) for (const cell of Object.values(r.cells)) { submitted++; if (cell.judged) judged++; }
 
@@ -836,7 +849,8 @@ async function renderBoard(id) {
       h('thead', null, h('tr', null, h('th', null, '账号'), h('th', null, '姓名'),
         c.problems.map((p) => h('th', { class: 'cell' }, p.title !== p.name ? `${p.title} (${p.name})` : p.name)),
         scored ? h('th', { class: 'cell' }, '总分') : null,
-        h('th', { class: 'cell' }, '已提交'))),
+        h('th', { class: 'cell' }, '已提交'),
+        h('th', { class: 'cell' }, '提前结束'))),
       h('tbody', null, b.rows.map((r) => h('tr', null,
         h('td', { class: 'mono' }, r.username), h('td', null, r.realName),
         c.problems.map((p) => {
@@ -853,7 +867,9 @@ async function renderBoard(id) {
           }, h('span', { class: 'cell-size' }, fmtSize(s.size)), state);
         }),
         scored ? h('td', { class: 'cell' }, r.total === null ? h('span', { class: 'muted' }, '—') : h('b', null, r.total)) : null,
-        h('td', { class: 'cell muted' }, `${Object.keys(r.cells).length} / ${c.problems.length}`)))));
+        h('td', { class: 'cell muted' }, `${Object.keys(r.cells).length} / ${c.problems.length}`),
+        h('td', { class: 'cell' }, r.finishedAt ? [h('span', { title: fmtTime(r.finishedAt) }, fmtTime(r.finishedAt, false).slice(6)),
+          h('a', { class: 'undo-link', title: '允许该选手继续提交', onclick: () => undoFinish(r) }, '撤销')] : h('span', { class: 'muted' }, '—'))))));
 
     put(body, 
       h('div', { class: 'page-head' },
@@ -866,7 +882,7 @@ async function renderBoard(id) {
       lemonCard,
       b.rows.length ? h('div', { class: 'table-wrap' }, table) : h('div', { class: 'card empty' }, '没有可参赛的用户'),
       h('div', { class: 'section-foot' },
-        `${b.rows.length} 名选手 · 提交 ${submitted}` + (scored ? ` · 已评测 ${judged}` : '') + (submitted ? ' · 点击格子查看代码' : '')));
+        `${b.rows.length} 名选手 · 提交 ${submitted}` + (scored ? ` · 已评测 ${judged}` : '') + (finished ? ` · 提前结束 ${finished}` : '') + (submitted ? ' · 点击格子查看代码' : '')));
   };
 
   const reload = async () => {
@@ -876,6 +892,15 @@ async function renderBoard(id) {
       b = fresh;
       if (changed) render();
     } catch (e) { if (e.status === 404) go('#/admin'); }
+  };
+
+  const undoFinish = async (r) => {
+    if (!(await confirmBox('撤销提前结束', `允许 ${r.username} 继续提交？`, '撤销'))) return;
+    try {
+      await api('DELETE', `/api/admin/contests/${id}/finished/${r.id}`);
+      toast('已撤销');
+      reload();
+    } catch (e) { fail(e); }
   };
 
   const act = async (what) => {

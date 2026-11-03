@@ -265,6 +265,8 @@ table.list td.cell.clickable { cursor: pointer; }
 .cell-score.full { color: var(--green); }
 .cell-score.part { color: var(--orange); }
 .cell-score.zero, .cell-score.bad { color: var(--red); }
+.undo-link { margin-left: 6px; font-size: 12px; cursor: pointer; }
+.finished-note { margin-top: 10px; padding: 6px 10px; border-radius: 8px; font-size: 13px; color: var(--orange); background: color-mix(in srgb, var(--orange) 12%, transparent); }
 
 .empty { padding: 48px 20px; text-align: center; color: var(--muted); }
 
