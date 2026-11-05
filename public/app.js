@@ -76,6 +76,33 @@ function toast(msg, error) {
 }
 const fail = (e) => toast(e.message || String(e), true);
 
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(text); return; } catch { /* HTTP/permissions: use selection-based copy. */ }
+  }
+  const active = document.activeElement;
+  const selection = window.getSelection();
+  const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i).cloneRange()) : [];
+  const input = h('textarea', { value: text, readonly: true, tabindex: -1, 'aria-hidden': 'true', 'data-clipboard-copy': '',
+    style: { position: 'fixed', top: 0, left: 0, width: '1px', height: '1px', opacity: 0, fontSize: '16px' } });
+  document.body.appendChild(input);
+  let copied = false;
+  try {
+    input.focus({ preventScroll: true }); input.select();
+    copied = typeof document.execCommand === 'function' && document.execCommand('copy');
+  } catch {
+    copied = false;
+  } finally {
+    input.remove();
+    if (active?.isConnected) active.focus({ preventScroll: true });
+    if (selection) {
+      selection.removeAllRanges();
+      for (const range of ranges) if (range.commonAncestorContainer.isConnected) selection.addRange(range);
+    }
+  }
+  if (!copied) throw new Error('复制失败，请手动选中代码复制');
+}
+
 function modal(title, body, buttons = [], opts = {}) {
   const close = () => { ov.remove(); document.removeEventListener('keydown', onKey); opts.onClose && opts.onClose(); };
   const onKey = (e) => { if (e.key === 'Escape') close(); };
@@ -429,6 +456,13 @@ function codeEditor(initial = '', readOnly = false) {
   return { el, area, get value() { return area.value; }, set value(v) { area.value = v; update(); }, update };
 }
 
+function sourceDialog(title, code) {
+  return modal(title, codeEditor(code, true).el, [
+    { label: '复制代码', primary: true, onClick: async () => { await copyText(code); toast('代码已复制'); return false; } },
+    { label: '关闭' },
+  ], { wide: true });
+}
+
 async function renderContest(id) {
   let c = await api('GET', '/api/contests/' + id);
   let refreshing = false;
@@ -551,8 +585,7 @@ async function renderContest(id) {
   const viewSource = async (p) => {
     try {
       const s = await api('GET', `/api/contests/${c.id}/source/${enc(p.name)}`);
-      const ed = codeEditor(s.code, true);
-      modal(`${p.title} · ${s.lang}`, ed.el, [], { wide: true });
+      sourceDialog(`${p.title} · ${s.lang}`, s.code);
     } catch (e) { fail(e); }
   };
 
@@ -943,7 +976,7 @@ async function renderBoard(id) {
 async function adminSource(c, r, p) {
   try {
     const s = await api('GET', `/api/admin/contests/${c.id}/source/${r.id}/${enc(p.name)}`);
-    modal(`${r.username} · ${p.name}`, codeEditor(s.code, true).el, [], { wide: true, left: null });
+    sourceDialog(`${r.username} · ${p.name}`, s.code);
   } catch (e) { fail(e); }
 }
 

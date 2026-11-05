@@ -27,6 +27,7 @@ let browserError = '';
 browser.stderr.on('data', data => { browserError = (browserError + data).slice(-8192); });
 browser.on('error', error => { browserError += error.message; });
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const alphaCode = '// 测试😀\r\n\tint main() { return 0; }\r\n\r\n';
 let socket, send;
 try {
   let targets;
@@ -56,6 +57,29 @@ try {
     for (let i = 0; i < 240; i++) { if (await evaluate(expression)) return; await delay(50); }
     throw new Error('Browser condition timed out: ' + expression);
   };
+  const copyFromViewer = async mode => {
+    await wait('!!document.querySelector(".overlay .editor pre")');
+    assert.ok(await evaluate(`[...document.querySelectorAll('.overlay button')].some(button=>button.textContent==='复制代码')`), 'the code viewer must have a copy button');
+    await evaluate(`(() => {
+      window.clipboardOriginal ||= {descriptor:Object.getOwnPropertyDescriptor(navigator,'clipboard'),exec:document.execCommand};
+      window.copiedCode=null;
+      const mode=${JSON.stringify(mode)};
+      Object.defineProperty(navigator,'clipboard',{configurable:true,value:mode==='insecure'?undefined:{writeText:async text=>{if(mode!=='modern')throw new Error('permission denied');window.copiedCode=text;}}});
+      document.execCommand=command=>{if(mode==='failed')return false;if(command==='copy'){window.copiedCode=document.activeElement.value;return true;}return false;};
+      [...document.querySelectorAll('.overlay button')].find(button=>button.textContent==='复制代码').click();
+    })()`);
+    if (mode === 'failed') {
+      await wait(`document.querySelector('.toasts').textContent.includes('复制失败')`);
+      assert.equal(await evaluate('window.copiedCode'), null);
+    } else {
+      await wait('window.copiedCode !== null');
+      assert.equal((await evaluate('window.copiedCode')).replace(/\r\n/g, '\n'), alphaCode.replace(/\r\n/g, '\n'));
+    }
+    assert.equal(await evaluate(`document.querySelector('.overlay .editor pre').textContent`), alphaCode);
+    assert.ok(await evaluate(`!!document.querySelector('.overlay')`), 'copying must keep the viewer open');
+    assert.equal(await evaluate(`document.querySelectorAll('textarea[data-clipboard-copy]').length`), 0);
+    await wait(`[...document.querySelectorAll('.overlay button')].some(button=>button.textContent==='复制代码' && !button.disabled)`);
+  };
   await send('Page.enable');
   await send('Page.navigate', { url: origin + '/#/login' });
   for (let i = 0; i < 100 && !await evaluate('!!document.querySelector(".login")'); i++) await delay(50);
@@ -83,10 +107,10 @@ try {
     return (await call('/api/admin/contests',{name:'ui-rename',startTime:Date.now()+3600000,endTime:Date.now()+7200000,problems:[{name:'alpha'},{name:'beta'}]})).id;
   })()`);
   const contest = app.ctx.contest(contestId), user = app.ctx.data.users.find(u => u.username === 'alice');
-  const submissions = { alpha: { time: Date.now(), size: 7, count: 2, lang: 'C++' }, beta: { time: Date.now(), size: 6, count: 1, lang: 'C++' } };
+  const submissions = { alpha: { time: Date.now(), size: Buffer.byteLength(alphaCode), count: 2, lang: 'C++' }, beta: { time: Date.now(), size: 6, count: 1, lang: 'C++' } };
   app.ctx.data.submissions[contestId] = { [user.id]: submissions };
   await fs.mkdir(path.dirname(app.ctx.submissionFile(contest, 'alice', 'alpha')), { recursive: true });
-  await fs.writeFile(app.ctx.submissionFile(contest, 'alice', 'alpha'), 'alpha\r\n');
+  await fs.writeFile(app.ctx.submissionFile(contest, 'alice', 'alpha'), alphaCode);
   await fs.writeFile(app.ctx.submissionFile(contest, 'alice', 'beta'), 'beta!\n');
   await evaluate(`location.hash='#/admin/c/${contestId}/edit'`);
   for (let i = 0; i < 200 && !await evaluate('document.querySelectorAll(".prow").length === 2'); i++) await delay(25);
@@ -98,11 +122,16 @@ try {
   })()`);
   for (let i = 0; i < 200 && contest.problems[0].name !== 'new-beta'; i++) await delay(25);
   assert.deepEqual(contest.problems.map(p => p.name), ['new-beta', 'new-alpha']);
-  assert.equal(await fs.readFile(app.ctx.submissionFile(contest, 'alice', 'new-alpha'), 'utf8'), 'alpha\r\n');
+  assert.equal(await fs.readFile(app.ctx.submissionFile(contest, 'alice', 'new-alpha'), 'utf8'), alphaCode);
   assert.equal(await fs.readFile(app.ctx.submissionFile(contest, 'alice', 'new-beta'), 'utf8'), 'beta!\n');
   assert.equal(app.ctx.data.submissions[contestId][user.id]['new-alpha'].count, 2);
   console.log('PASS contest editor renames the corresponding submissions after reordering');
   for (let i = 0; i < 200 && !await evaluate(`location.hash === '#/admin/c/${contestId}' && !!document.querySelector('.user-btn')`); i++) await delay(25);
+  await evaluate(`adminSource({id:${contestId}},{id:${user.id},username:'alice'},{name:'new-alpha'})`);
+  await copyFromViewer('modern');
+  await copyFromViewer('denied');
+  await evaluate(`document.querySelector('.overlay .modal-head button').click()`);
+  console.log('PASS admin code copy uses the clipboard and falls back when permission is denied');
 
   await evaluate(`location.hash='#/admin/c/${contestId}/edit'`);
   await wait('!!document.querySelector("input[name=downZipReleaseMinutes]")');
@@ -173,6 +202,11 @@ try {
   await wait('!!document.querySelector(".user-btn") && !document.querySelector(".login")');
   await evaluate(`location.hash='#/c/${contestId}'`);
   await wait('!!document.querySelector("[data-material=downzip]")');
+  await evaluate(`(() => {const card=[...document.querySelectorAll('.problem')].find(item=>item.querySelector('.title').textContent.includes('new-alpha'));[...card.querySelectorAll('button')].find(button=>button.textContent==='查看代码').click();})()`);
+  await copyFromViewer('insecure');
+  await copyFromViewer('failed');
+  await evaluate(`document.querySelector('.overlay .modal-head button').click()`);
+  console.log('PASS contestant code copy supports HTTP fallback and reports failure without losing the code');
   assert.ok(await evaluate(`document.querySelector('[data-material=downzip]').textContent.includes('待下发')`));
   assert.ok(await evaluate(`document.querySelector('[data-material=password]').textContent.includes('待公布')`));
   assert.equal(await evaluate(`!!document.querySelector('[data-material=downzip] a') || document.body.textContent.includes('ui-release-secret')`), false);
