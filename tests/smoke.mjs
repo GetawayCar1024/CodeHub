@@ -74,7 +74,7 @@ async function waitFor(what, fn, timeout = 60000) {
 try {
   const admin = client();
   const st = await admin('GET', '/api/status');
-  assert.equal(st.version, '0.1.2');
+  assert.equal(st.version, '0.1.3');
   assert.equal(st.user, null);
 
   step('admin login, CSRF header');

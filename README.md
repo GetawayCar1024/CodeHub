@@ -2,7 +2,7 @@
 
 信息学竞赛程序回收系统：选手在浏览器中提交源代码，管理员管理用户与比赛，可与 [LemonServer](https://github.com/GetawayCar1024/LemonServer) 联动评测。
 
-版本 0.1.2 · Node.js ≥ 22.2，无第三方依赖。
+版本 0.1.3 · Node.js ≥ 22.2，无第三方依赖。
 
 ## 安装
 

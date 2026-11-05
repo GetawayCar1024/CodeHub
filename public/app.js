@@ -273,6 +273,7 @@ function passwordDialog() {
 }
 
 function shell(active, ...content) {
+  $app.classList.remove('login-page');
   clearTimers();
   document.querySelectorAll('.overlay').forEach((o) => o.remove());
   const banner = isAdmin() && S.status.user.defaultPassword
@@ -326,6 +327,7 @@ async function route() {
 
 function renderLogin() {
   clearTimers();
+  $app.classList.add('login-page');
   const user = h('input', { type: 'text', placeholder: '用户名', autocomplete: 'username' });
   const pass = h('input', { type: 'password', placeholder: '密码', autocomplete: 'current-password' });
   const read = h('input', { type: 'checkbox' });
