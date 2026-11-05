@@ -431,6 +431,7 @@ function codeEditor(initial = '', readOnly = false) {
 
 async function renderContest(id) {
   let c = await api('GET', '/api/contests/' + id);
+  let refreshing = false;
   const main = shell(null);
   const head = h('div');
   const cards = h('div', { class: 'problems' });
@@ -458,9 +459,12 @@ async function renderContest(id) {
           c.finishedAt ? h('div', { class: 'finished-note' }, `你已于 ${fmtTime(c.finishedAt, false).slice(6)} 结束比赛，不能再提交`) : null),
         h('ul', { class: 'steps' },
           step(0, '下载考生手册并仔细阅读', c.manual ? h('a', { href: '/api/manual', target: '_blank' }, '下载') : h('span', { class: 'muted' }, '暂无考生手册')),
-          step(1, '下载试题包并解压', c.downZip ? h('a', { href: `/api/contests/${c.id}/down.zip` }, '下载') : h('span', { class: 'muted' }, '暂无 down.zip')),
-          step(2, '用密码解密试题册', !c.hasPassword ? h('span', { class: 'muted' }, '暂无密码')
-            : running ? h('code', { class: 'pwd' }, c.password) : h('span', { class: 'muted' }, '开始后显示')),
+          step(1, '下载试题包并解压', h('span', { 'data-material': 'downzip' },
+            c.downZipState === 'available' ? h('a', { href: `/api/contests/${c.id}/down.zip` }, '下载')
+              : h('span', { class: 'muted' }, c.downZipState === 'pending' ? `待下发（${fmtTime(c.downZipReleaseAt, false)}）` : '未设置 down.zip'))),
+          step(2, '用密码解密试题册', h('span', { 'data-material': 'password' },
+            c.passwordState === 'available' ? h('code', { class: 'pwd' }, c.password)
+              : h('span', { class: 'muted' }, c.passwordState === 'pending' ? `待公布（${fmtTime(c.passwordReleaseAt, false)}）` : '未设置密码'))),
           step(3, '编写代码，提交到系统'),
           step(4, '查看已提交的代码，确认无误'),
           h('li', { class: 'note' }, '输入输出请严格按试题册要求编写。'))));
@@ -487,7 +491,9 @@ async function renderContest(id) {
   const tick = () => {
     const t = now();
     const phase = t < c.startTime ? 'before' : t < c.endTime ? 'running' : 'ended';
-    if (phase !== c.phase) return refresh();
+    const releaseDue = (c.downZipState === 'pending' && t >= c.downZipReleaseAt)
+      || (c.passwordState === 'pending' && t >= c.passwordReleaseAt);
+    if (phase !== c.phase || releaseDue) return refresh();
     lblEl.textContent = phase === 'before' ? '距离开始' : phase === 'running' ? '距离结束' : '已结束';
     timeEl.textContent = phase === 'before' ? fmtDuration(c.startTime - t) : phase === 'running' ? fmtDuration(c.endTime - t) : '00:00:00';
   };
@@ -502,6 +508,8 @@ async function renderContest(id) {
   };
 
   const refresh = async (manual) => {
+    if (refreshing) return;
+    refreshing = true;
     try {
       const fresh = await api('GET', '/api/contests/' + id);
       const changed = JSON.stringify({ ...fresh, serverTime: 0 }) !== JSON.stringify({ ...c, serverTime: 0 });
@@ -513,7 +521,7 @@ async function renderContest(id) {
       if (manual) toast('已刷新');
     } catch (e) {
       if (e.status === 404) { toast(e.message, true); go('#/'); } else if (manual) fail(e);
-    }
+    } finally { refreshing = false; }
   };
 
   const submitDialog = (p) => {
@@ -588,17 +596,19 @@ async function renderAdminContests(page = 1) {
 }
 
 async function renderContestForm(id) {
-  const [contest, groups, settings] = await Promise.all([
+  const [loadedContest, groups, settings] = await Promise.all([
     id ? api('GET', '/api/admin/contests/' + id) : null,
     api('GET', '/api/admin/groups'),
     api('GET', '/api/admin/settings'),
   ]);
+  let contest = loadedContest, saving = false;
   const lemonOn = !!(settings.lemon.url && settings.lemon.apiKeySet);
   const t0 = new Date();
   t0.setMinutes(0, 0, 0);
   t0.setHours(t0.getHours() + 1);
   const f = contest ? structuredClone(contest) : {
     name: '', title: '', startTime: t0.getTime(), endTime: t0.getTime() + 4 * 3600000, earlyMinutes: 30,
+    downZipReleaseMinutes: 30, passwordReleaseMinutes: 0,
     problems: [{ name: '', title: '' }], groups: [], subFolder: false, downZipPassword: '', lemon: { contest: '', interval: null },
   };
   if (contest) for (const problem of f.problems) problem.previousName = problem.name;
@@ -608,13 +618,15 @@ async function renderContestForm(id) {
   const main = shell('contests', h('div', { class: 'page-head' },
     h('h2', null, contest ? '编辑比赛' : '新建比赛'),
     h('div', { class: 'right' },
-      h('button', { onclick: () => go(contest ? '#/admin/c/' + id : '#/admin') }, '取消'),
+      h('button', { onclick: () => go(contest ? '#/admin/c/' + contest.id : '#/admin') }, '取消'),
       h('button', { class: 'primary', onclick: () => save() }, '保存'))));
   main.classList.add('narrow');
 
   const input = (key, attrs = {}) => h('input', { type: 'text', class: 'full', value: f[key] ?? '', oninput: (e) => { f[key] = e.target.value; }, ...attrs });
   const timeLocked = !!(contest && contest.phase === 'ended');
   const timeInput = (key) => h('input', { type: 'datetime-local', disabled: timeLocked, min: toLocalInput(Date.now()), value: toLocalInput(f[key]), onchange: (e) => { f[key] = fromLocalInput(e.target.value); } });
+  const minuteInput = (key, label) => h('input', { type: 'number', name: key, 'aria-label': label, min: 0, max: 10080, step: 1,
+    disabled: timeLocked, value: f[key], oninput: (e) => { f[key] = e.target.value === '' ? '' : Number(e.target.value); } });
 
   // --- basics
   append(main, h('div', { class: 'section-title' }, '基本'),
@@ -623,7 +635,7 @@ async function renderContestForm(id) {
       row('标题', input('title', { placeholder: '留空则同比赛名' })),
       row('开始时间', timeInput('startTime')),
       row('结束时间', timeInput('endTime')),
-      row('提前进入', h('input', { type: 'number', min: 0, disabled: timeLocked, value: f.earlyMinutes, oninput: (e) => { f.earlyMinutes = e.target.value === '' ? '' : Number(e.target.value); } }), h('span', { class: 'muted' }, '分钟'))));
+      row('提前进入', minuteInput('earlyMinutes', '提前进入时间'), h('span', { class: 'muted' }, '分钟（开赛前）'))));
 
   // --- problems
   const plist = h('div', { class: 'problem-rows' });
@@ -672,11 +684,9 @@ async function renderContestForm(id) {
     const file = await pickFile('.zip,.7z,.rar');
     if (!file) return;
     lemonDownZip = null;
-    if (!contest) { pendingDownZip = file; return renderDz(); }
-    try {
-      Object.assign(contest, await uploadDownZip(contest.id, file));
-      toast('已上传');
-    } catch (e) { fail(e); }
+    // Save the release schedule before uploading, including for existing contests.
+    // Otherwise selecting a file could expose it under the previously saved schedule.
+    pendingDownZip = file;
     renderDz();
   };
   const removeDz = async () => {
@@ -689,8 +699,10 @@ async function renderContestForm(id) {
   append(main, h('div', { class: 'section-title' }, '试题包'),
     h('div', { class: 'group' },
       h('div', { class: 'row' }, h('div', { class: 'label' }, 'down.zip'), dzState),
-      row('解压密码', input('downZipPassword', { placeholder: '可不设置' }))),
-    h('div', { class: 'section-foot' }, '提前进入后即可下载，密码在开始后显示'));
+      row('down.zip 公开', minuteInput('downZipReleaseMinutes', 'down.zip 公开时间'), h('span', { class: 'muted' }, '分钟（开赛前）')),
+      row('解压密码', input('downZipPassword', { name: 'downZipPassword', placeholder: '未设置密码' })),
+      row('密码公布', minuteInput('passwordReleaseMinutes', '密码公布时间'), h('span', { class: 'muted' }, '分钟（开赛前）'))),
+    h('div', { class: 'section-foot' }, '可提前上传并设置密码，保存后按时下发。0 表示开赛时；须满足：提前进入 ≥ down.zip 公开 ≥ 密码公布。'));
 
   // --- storage
   const locked = contest?.hasSubmissions;
@@ -773,18 +785,27 @@ async function renderContestForm(id) {
   };
 
   const save = async () => {
+    if (saving) return;
+    const minutes = [f.earlyMinutes, f.downZipReleaseMinutes, f.passwordReleaseMinutes];
+    if (minutes.some(value => value === '' || !Number.isInteger(value) || value < 0 || value > 10080))
+      return toast('进入和公开时间须填写 0–10080 的整数分钟数', true);
+    if (f.earlyMinutes < f.downZipReleaseMinutes || f.downZipReleaseMinutes < f.passwordReleaseMinutes)
+      return toast('须满足：提前进入 ≥ down.zip 公开 ≥ 密码公布（开赛前分钟数）', true);
     const body = {
       name: (f.name || '').trim(), title: f.title, startTime: f.startTime, endTime: f.endTime,
       earlyMinutes: f.earlyMinutes, problems: f.problems.filter((p) => p.name || p.title), groups: f.groups,
+      downZipReleaseMinutes: f.downZipReleaseMinutes, passwordReleaseMinutes: f.passwordReleaseMinutes,
       subFolder: f.subFolder, downZipPassword: f.downZipPassword, lemon: { contest: f.lemon.contest || '', interval: f.lemon.interval },
     };
+    saving = true;
     try {
       const r = contest ? await api('PUT', '/api/admin/contests/' + contest.id, body) : await api('POST', '/api/admin/contests', body);
-      if (pendingDownZip) await uploadDownZip(r.id, pendingDownZip);
+      contest = r; // if a new contest's upload fails, retry saves this contest rather than creating it again
+      if (pendingDownZip) { contest = await uploadDownZip(r.id, pendingDownZip); pendingDownZip = null; }
       if (lemonDownZip) await api('POST', `/api/admin/contests/${r.id}/downzip/from-lemon`, { contest: lemonDownZip }).catch((e) => toast('导入 down.zip 失败：' + e.message, true));
       toast('已保存');
       go('#/admin/c/' + r.id);
-    } catch (e) { fail(e); }
+    } catch (e) { fail(e); } finally { saving = false; }
   };
 }
 

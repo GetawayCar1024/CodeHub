@@ -7,6 +7,7 @@ import { hashPassword, isValidName, isValidProblemName, sameName, toMs } from '.
 import { createZip } from './zip.js';
 import { normalizeUrl } from './lemon.js';
 import { commitContestEdit } from './contest-edit.js';
+import { materialTiming } from './contest-materials.js';
 
 const MAX_UPLOAD = 1024 * 1024 * 1024;
 const collator = new Intl.Collator('zh-CN', { numeric: true });
@@ -336,6 +337,7 @@ export function setupAdminRoutes(router, ctx) {
     startTime: c.startTime,
     endTime: c.endTime,
     earlyMinutes: c.earlyMinutes,
+    ...materialTiming(c),
     problems: c.problems,
     groups: c.groups,
     subFolder: !!c.subFolder,
@@ -377,6 +379,21 @@ export function setupAdminRoutes(router, ctx) {
       if (!isNew && contestPhase(c) === 'ended' && m !== c.earlyMinutes) fail(409, '比赛已结束，时间不能再修改');
       next.earlyMinutes = m;
     }
+    for (const [key, label, fallback] of [
+      ['downZipReleaseMinutes', 'down.zip 公开时间', next.earlyMinutes ?? 30],
+      ['passwordReleaseMinutes', '密码公布时间', 0],
+    ]) {
+      if (!isNew && !(key in body)) continue;
+      const value = body[key] === undefined || body[key] === '' ? fallback : body[key];
+      if (typeof value !== 'number' && typeof value !== 'string') fail(400, `${label}须为开赛前的非负整数分钟数`);
+      const minutes = Number(value);
+      if (!Number.isInteger(minutes) || minutes < 0 || minutes > 7 * 1440) fail(400, `${label}须为 0–10080 分钟`);
+      if (!isNew && contestPhase(c) === 'ended' && minutes !== materialTiming(c)[key]) fail(409, '比赛已结束，时间不能再修改');
+      next[key] = minutes;
+    }
+    const timing = materialTiming(next);
+    if ((next.earlyMinutes ?? 30) < timing.downZipReleaseMinutes || timing.downZipReleaseMinutes < timing.passwordReleaseMinutes)
+      fail(400, '公开顺序须满足：提前进入 ≥ down.zip 公开 ≥ 密码公布（均为开赛前分钟数）');
     if (isNew || 'problems' in body) {
       const list = Array.isArray(body.problems) ? body.problems : [];
       const seen = new Set();

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fail, readJson, sendFile } from './http.js';
 import { checkPassword, hashPassword } from './util.js';
 import { VERSION } from './version.js';
+import { contestMaterials } from './contest-materials.js';
 
 const MIN = 60000;
 
@@ -130,9 +131,7 @@ export function setupUserRoutes(router, ctx) {
       endTime: c.endTime,
       phase,
       serverTime: Date.now(),
-      downZip: !!c.downZip,
-      hasPassword: !!c.downZipPassword,
-      password: phase === 'running' ? c.downZipPassword || '' : null,
+      ...contestMaterials(c),
       manual: !!data.settings.manual,
       maxCodeKiB: data.settings.maxCodeKiB,
       finishedAt: data.finished[c.id]?.[user.id] ?? null,
@@ -143,7 +142,9 @@ export function setupUserRoutes(router, ctx) {
 
   router.get('/api/contests/:id/down.zip', (req, res, p) => {
     const { c } = openContest(req, p.id);
-    if (!c.downZip) fail(404, '没有试题包');
+    const materials = contestMaterials(c);
+    if (materials.downZipState === 'unset') fail(404, '未设置 down.zip');
+    if (materials.downZipState !== 'available') fail(403, 'down.zip 待下发，尚未到公开时间');
     sendFile(res, ctx.downZipFile(c), { name: c.downZip.name || 'down.zip', mime: 'application/zip' });
   });
 

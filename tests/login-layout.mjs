@@ -1,4 +1,4 @@
-// Browser regressions: login layout and the real contest editor's rename/reorder flow.
+// Browser regressions: login layout, contest editing and timed material publication.
 // Uses an installed Chromium browser (CHROME_BIN can override auto-detection).
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -52,6 +52,10 @@ try {
     assert.ok(!result.exceptionDetails, JSON.stringify(result.exceptionDetails));
     return result.result.value;
   };
+  const wait = async expression => {
+    for (let i = 0; i < 240; i++) { if (await evaluate(expression)) return; await delay(50); }
+    throw new Error('Browser condition timed out: ' + expression);
+  };
   await send('Page.enable');
   await send('Page.navigate', { url: origin + '/#/login' });
   for (let i = 0; i < 100 && !await evaluate('!!document.querySelector(".login")'); i++) await delay(50);
@@ -99,11 +103,89 @@ try {
   assert.equal(app.ctx.data.submissions[contestId][user.id]['new-alpha'].count, 2);
   console.log('PASS contest editor renames the corresponding submissions after reordering');
   for (let i = 0; i < 200 && !await evaluate(`location.hash === '#/admin/c/${contestId}' && !!document.querySelector('.user-btn')`); i++) await delay(25);
+
+  await evaluate(`location.hash='#/admin/c/${contestId}/edit'`);
+  await wait('!!document.querySelector("input[name=downZipReleaseMinutes]")');
+  await evaluate(`(() => {const input=document.querySelector('input[name=downZipReleaseMinutes]');input.value='31';input.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.page-head button.primary').click();})()`);
+  await wait('document.querySelector(".toasts").textContent.includes("须满足")');
+  assert.equal(contest.downZipReleaseMinutes, 30, 'invalid order must not save');
+  await evaluate(`(() => {
+    for(const [name,value] of Object.entries({earlyMinutes:30,downZipReleaseMinutes:20,passwordReleaseMinutes:10,downZipPassword:'ui-release-secret'})) {
+      const input=document.querySelector('input[name='+name+']');input.value=String(value);input.dispatchEvent(new Event('input',{bubbles:true}));
+    }
+    pickFile=async()=>new File(['PK-ui-material'], 'down.zip', {type:'application/zip'});
+    [...document.querySelectorAll('button')].find(button=>button.textContent==='上传').click();
+  })()`);
+  await wait('document.querySelector("main").textContent.includes("保存后上传")');
+  assert.equal(contest.downZip, null, 'choosing a file must not upload under the old schedule');
+  await evaluate(`document.querySelector('.page-head button.primary').click()`);
+  for (let i = 0; i < 240 && !contest.downZip; i++) await delay(25);
+  assert.ok(contest.downZip, 'the chosen file must upload after saving');
+  assert.deepEqual([contest.downZipReleaseMinutes, contest.passwordReleaseMinutes], [20, 10]);
+  assert.equal(await fs.readFile(app.ctx.downZipFile(contest), 'utf8'), 'PK-ui-material');
+  await wait(`location.hash === '#/admin/c/${contestId}' && !!document.querySelector('.user-btn')`);
+  console.log('PASS material settings reject invalid order and save before uploading');
+
+  const contestsBeforeCreate = app.ctx.data.contests.length;
+  await evaluate(`location.hash='#/admin/new'`);
+  await wait('!!document.querySelector(".prow input")');
+  await evaluate(`(() => {
+    const set=(input,value)=>{input.value=value;input.dispatchEvent(new Event('input',{bubbles:true}));};
+    set(document.querySelector('input[placeholder^="作为文件夹名"]'),'ui-create-release');
+    set(document.querySelector('.prow input'),'sum');
+    set(document.querySelector('input[name=downZipReleaseMinutes]'),'20');
+    set(document.querySelector('input[name=passwordReleaseMinutes]'),'10');
+    set(document.querySelector('input[name=downZipPassword]'),'new-secret');
+    [...document.querySelectorAll('button')].find(button=>button.textContent==='上传').click();
+  })()`);
+  await wait('document.querySelector("main").textContent.includes("保存后上传")');
+  assert.equal(app.ctx.data.contests.length, contestsBeforeCreate, 'choosing a file must not create a contest');
+  await evaluate(`(() => {
+    const original=window.fetch;
+    window.fetch=async (...args)=>{
+      if(typeof args[0]==='string' && args[0].includes('/downzip?')) {
+        window.fetch=original;
+        return new Response(JSON.stringify({error:'fixture upload failure'}),{status:503,headers:{'Content-Type':'application/json'}});
+      }
+      return original(...args);
+    };
+    document.querySelector('.page-head button.primary').click();
+  })()`);
+  await wait('document.querySelector(".toasts").textContent.includes("fixture upload failure")');
+  const createdContest = app.ctx.data.contests.find(c => c.name === 'ui-create-release');
+  assert.ok(createdContest);
+  assert.equal(createdContest.downZip, null);
+  await evaluate(`document.querySelector('.page-head button.primary').click()`);
+  await wait(`location.hash === '#/admin/c/${createdContest.id}'`);
+  assert.equal(app.ctx.data.contests.length, contestsBeforeCreate + 1, 'retry must not create a duplicate contest');
+  assert.ok(createdContest.downZip, 'the prepared file must upload when the save is retried');
+  console.log('PASS new contest can prepare a ZIP/password and retry a failed upload');
+
   await evaluate(`document.querySelector('.user-btn').click();[...document.querySelectorAll('.menu .item')].find(e=>e.textContent.includes('退出登录')).click()`);
   for (let i = 0; i < 200 && !await evaluate('!!document.querySelector(".login")'); i++) await delay(25);
   assert.equal(await evaluate('document.querySelector("#app").classList.contains("login-page")'), true);
   assert.ok(await evaluate('document.documentElement.scrollHeight <= 601'));
   console.log('PASS login/logout restores the correct page layout');
+
+  contest.startTime = Date.now() + 25 * 60000;
+  contest.endTime = contest.startTime + 3600000;
+  await evaluate(`document.querySelector('.login input[type=text]').value='alice';document.querySelector('.login input[type=password]').value='test-password';document.querySelector('form.login').requestSubmit()`);
+  await wait('!!document.querySelector(".user-btn") && !document.querySelector(".login")');
+  await evaluate(`location.hash='#/c/${contestId}'`);
+  await wait('!!document.querySelector("[data-material=downzip]")');
+  assert.ok(await evaluate(`document.querySelector('[data-material=downzip]').textContent.includes('待下发')`));
+  assert.ok(await evaluate(`document.querySelector('[data-material=password]').textContent.includes('待公布')`));
+  assert.equal(await evaluate(`!!document.querySelector('[data-material=downzip] a') || document.body.textContent.includes('ui-release-secret')`), false);
+  // No reload or click: the open page must pick up both releases while still before the start.
+  contest.startTime = Date.now() + 20 * 60000 + 1800;
+  await wait('!!document.querySelector("[data-material=downzip] a")');
+  assert.ok(await evaluate(`document.querySelector('[data-material=password]').textContent.includes('待公布')`));
+  contest.startTime = Date.now() + 10 * 60000 + 1800;
+  await wait(`document.querySelector('[data-material=password]').textContent === 'ui-release-secret'`);
+  assert.equal(await evaluate(`document.querySelector('.countdown .lbl').textContent`), '距离开始');
+  contest.downZip = null; contest.downZipPassword = '';
+  await wait(`document.querySelector('[data-material=downzip]').textContent === '未设置 down.zip' && document.querySelector('[data-material=password]').textContent === '未设置密码'`);
+  console.log('PASS separate pending/unset messages and automatic pre-start release');
 } finally {
   if (send) await Promise.race([send('Browser.close').catch(() => {}), delay(500)]);
   socket?.close(); browser.kill(); app.stop();

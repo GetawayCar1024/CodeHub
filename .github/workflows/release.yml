@@ -26,6 +26,9 @@ jobs:
       - name: Submission rename regression
         run: node --test tests/problem-rename.mjs
 
+      - name: Timed material release regression
+        run: node --test tests/material-release.mjs
+
       - name: Login layout regression
         run: node tests/login-layout.mjs
 
@@ -66,6 +69,9 @@ jobs:
 
       - name: Submission rename regression
         run: node --test tests/problem-rename.mjs
+
+      - name: Timed material release regression
+        run: node --test tests/material-release.mjs
 
       - name: Login layout regression
         run: node tests/login-layout.mjs
