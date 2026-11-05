@@ -64,6 +64,9 @@ test('materials can be prepared early but are released only at their own server-
   assert.deepEqual([response.value.downZip, response.value.hasDownZip, response.value.hasPassword, response.value.password], [false, true, true, null]);
   assert.equal(response.value.downZipReleaseAt, start - 20 * MINUTE);
   assert.equal(response.value.passwordReleaseAt, start - 10 * MINUTE);
+  assert.equal(response.value.problemsReleaseAt, start - 10 * MINUTE);
+  assert.equal(response.value.problemsReleased, false);
+  assert.deepEqual(response.value.problems, []);
   assert.equal(JSON.stringify(response.value).includes(PASSWORD), false);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   await student('GET', publicPath + '/down.zip', undefined, { status: 403, headers: { Range: 'bytes=0-5', Date: new Date(start).toUTCString() } });
@@ -81,6 +84,8 @@ test('materials can be prepared early but are released only at their own server-
   at(start - 10 * MINUTE);
   response = await student('GET', publicPath);
   assert.deepEqual([response.value.passwordState, response.value.password, response.value.phase], ['available', PASSWORD, 'before']);
+  assert.equal(response.value.problemsReleased, true);
+  assert.equal(response.value.problems[0].name, 'sum');
   await student('POST', publicPath + '/submit', { problem: 'sum', code: 'int main(){}' }, { status: 403 });
   at(start);
   assert.equal((await student('GET', publicPath)).value.password, PASSWORD);
@@ -169,3 +174,43 @@ test('resource release does not bypass authentication or contest groups', async 
   await student('GET', `/api/admin/contests/${c.id}`, undefined, { status: 403 });
   await student('GET', `/files/contest-${c.id}/down.zip`, undefined, { status: 404 });
 }));
+
+test('problem names follow the password schedule even without a password, including direct source access', async t => fixture(t, async ({ admin, student, app, c, start, adminPath, publicPath, at }) => {
+  c.problems[0].title = '尚未公布的题目';
+  const user = app.ctx.data.users.find(item => item.username === 'student');
+  const code = '// previously submitted code\nint main(){}\n';
+  app.ctx.data.submissions[c.id] = { [user.id]: { sum: { time: start - 3600000, count: 1, size: Buffer.byteLength(code), lang: 'C++' } } };
+  const file = app.ctx.submissionFile(c, user.username, 'sum');
+  fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, code);
+
+  at(start - 10 * MINUTE - 1);
+  let value = (await student('GET', publicPath)).value;
+  assert.equal(value.hasPassword, false);
+  assert.equal(value.passwordState, 'unset');
+  assert.equal(value.problemsReleased, false);
+  assert.equal(value.problemsReleaseAt, start - 10 * MINUTE);
+  assert.deepEqual(value.problems, []);
+  assert.equal(JSON.stringify(value).includes('尚未公布的题目'), false);
+  assert.equal(JSON.stringify(value).includes('"sum"'), false);
+  assert.equal((await student('GET', '/api/contests')).value.contests[0].problems, 1, 'the list may show the count but not names');
+  await student('GET', publicPath + '/source/sum', undefined, { status: 403 });
+  await student('GET', publicPath + '/source/guessed-name', undefined, { status: 403 });
+  assert.equal((await admin('GET', adminPath)).value.problems[0].title, '尚未公布的题目');
+  assert.equal((await admin('GET', `${adminPath}/source/${user.id}/sum`)).value.code, code);
+
+  at(start - 10 * MINUTE);
+  value = (await student('GET', publicPath)).value;
+  assert.equal(value.password, null);
+  assert.equal(value.passwordState, 'unset');
+  assert.equal(value.problemsReleased, true);
+  assert.deepEqual(value.problems.map(problem => [problem.name, problem.title]), [['sum', '尚未公布的题目']]);
+  assert.equal((await student('GET', publicPath + '/source/sum')).value.code, code);
+
+  await admin('PUT', adminPath, { passwordReleaseMinutes: 0 });
+  value = (await student('GET', publicPath)).value;
+  assert.equal(value.problemsReleased, false, 'changing the schedule must also change name visibility');
+  assert.deepEqual(value.problems, []);
+  await student('GET', publicPath + '/source/sum', undefined, { status: 403 });
+  at(start);
+  assert.equal((await student('GET', publicPath)).value.problemsReleased, true);
+}, { materials: false }));

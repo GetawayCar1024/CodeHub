@@ -507,6 +507,10 @@ async function renderContest(id) {
 
   const renderCards = () => {
     const running = c.phase === 'running';
+    if (!c.problemsReleased) {
+      return put(cards, h('div', { class: 'card empty', 'data-problems-pending': true, style: { gridColumn: '1 / -1' } },
+        '题目待公布', h('div', { class: 'muted small', style: { marginTop: '6px' } }, fmtTime(c.problemsReleaseAt, false))));
+    }
     put(cards, ...c.problems.map((p) => {
       const s = p.submission;
       return h('div', { class: 'problem' + (s ? ' done' : '') },
@@ -526,7 +530,8 @@ async function renderContest(id) {
     const t = now();
     const phase = t < c.startTime ? 'before' : t < c.endTime ? 'running' : 'ended';
     const releaseDue = (c.downZipState === 'pending' && t >= c.downZipReleaseAt)
-      || (c.passwordState === 'pending' && t >= c.passwordReleaseAt);
+      || (c.passwordState === 'pending' && t >= c.passwordReleaseAt)
+      || (!c.problemsReleased && t >= c.problemsReleaseAt);
     if (phase !== c.phase || releaseDue) return refresh();
     lblEl.textContent = phase === 'before' ? '距离开始' : phase === 'running' ? '距离结束' : '已结束';
     timeEl.textContent = phase === 'before' ? fmtDuration(c.startTime - t) : phase === 'running' ? fmtDuration(c.endTime - t) : '00:00:00';
@@ -735,7 +740,7 @@ async function renderContestForm(id) {
       row('down.zip 公开', minuteInput('downZipReleaseMinutes', 'down.zip 公开时间'), h('span', { class: 'muted' }, '分钟（开赛前）')),
       row('解压密码', input('downZipPassword', { name: 'downZipPassword', placeholder: '未设置密码' })),
       row('密码公布', minuteInput('passwordReleaseMinutes', '密码公布时间'), h('span', { class: 'muted' }, '分钟（开赛前）'))),
-    h('div', { class: 'section-foot' }, '可提前上传并设置密码，保存后按时下发。0 表示开赛时；须满足：提前进入 ≥ down.zip 公开 ≥ 密码公布。'));
+    h('div', { class: 'section-foot' }, '0 表示开赛时；须满足：提前进入 ≥ down.zip 公开 ≥ 密码公布。题目名也在该时刻显示，无密码时同样适用。'));
 
   // --- storage
   const locked = contest?.hasSubmissions;

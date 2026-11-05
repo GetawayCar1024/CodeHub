@@ -124,18 +124,20 @@ export function setupUserRoutes(router, ctx) {
   router.get('/api/contests/:id', (req, res, p) => {
     const { c, user, phase } = openContest(req, p.id);
     const subs = data.submissions[c.id]?.[user.id] || {};
+    const serverTime = Date.now();
+    const materials = contestMaterials(c, serverTime);
     return {
       id: c.id,
       title: c.title,
       startTime: c.startTime,
       endTime: c.endTime,
       phase,
-      serverTime: Date.now(),
-      ...contestMaterials(c),
+      serverTime,
+      ...materials,
       manual: !!data.settings.manual,
       maxCodeKiB: data.settings.maxCodeKiB,
       finishedAt: data.finished[c.id]?.[user.id] ?? null,
-      problems: c.problems.map((pr) => ({ name: pr.name, title: pr.title || pr.name, submission: subs[pr.name] || null })),
+      problems: materials.problemsReleased ? c.problems.map((pr) => ({ name: pr.name, title: pr.title || pr.name, submission: subs[pr.name] || null })) : [],
       user: { username: user.username, realName: user.realName, groups: (user.groups || []).map((g) => data.groups.find((x) => x.id === g)?.name).filter(Boolean) },
     };
   });
@@ -153,6 +155,7 @@ export function setupUserRoutes(router, ctx) {
     const body = await readJson(req, data.settings.maxCodeKiB * 1024 * 2 + 4096);
     if (phase !== 'running') fail(403, phase === 'before' ? '比赛尚未开始' : '比赛已结束');
     if (data.finished[c.id]?.[user.id]) fail(403, '你已结束比赛，不能再提交');
+    if (!contestMaterials(c).problemsReleased) fail(403, '题目待公布');
     const problem = c.problems.find((x) => x.name === body.problem);
     if (!problem) fail(404, '题目不存在');
     if (typeof body.code !== 'string' || !body.code.trim()) fail(400, '代码为空');
@@ -186,6 +189,7 @@ export function setupUserRoutes(router, ctx) {
 
   router.get('/api/contests/:id/source/:problem', (req, res, p) => {
     const { c, user } = openContest(req, p.id);
+    if (!contestMaterials(c).problemsReleased) fail(403, '题目待公布');
     const sub = data.submissions[c.id]?.[user.id]?.[p.problem];
     if (!sub) fail(404, '尚未提交');
     const file = ctx.submissionFile(c, user.username, p.problem);

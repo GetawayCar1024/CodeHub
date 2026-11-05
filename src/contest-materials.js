@@ -25,5 +25,8 @@ export function contestMaterials(contest, now = Date.now()) {
     password: passwordState === 'available' ? contest.downZipPassword : null,
     passwordState,
     passwordReleaseAt: contest.downZipPassword ? passwordReleaseAt : null,
+    // Names follow the configured deadline, not whether a password happens to be set.
+    problemsReleased: now >= passwordReleaseAt,
+    problemsReleaseAt: passwordReleaseAt,
   };
 }
