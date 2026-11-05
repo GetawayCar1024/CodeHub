@@ -6,6 +6,7 @@ import { allowedFor, changePassword, contestPhase, paginate, sortContests } from
 import { hashPassword, isValidName, isValidProblemName, sameName, toMs } from './util.js';
 import { createZip } from './zip.js';
 import { normalizeUrl } from './lemon.js';
+import { commitContestEdit } from './contest-edit.js';
 
 const MAX_UPLOAD = 1024 * 1024 * 1024;
 const collator = new Intl.Collator('zh-CN', { numeric: true });
@@ -403,23 +404,21 @@ export function setupAdminRoutes(router, ctx) {
       if (interval !== null && (!Number.isInteger(interval) || interval < 0 || interval > 1440)) fail(400, '评测周期应为 0–1440 分钟');
       next.lemon = { contest: lc, interval };
     }
-    if (!isNew && next.name !== c.name) {
-      const from = path.join(ctx.storageRoot(), c.name);
-      const to = path.join(ctx.storageRoot(), next.name);
-      if (fs.existsSync(from)) {
-        if (fs.existsSync(to) && !sameName(c.name, next.name)) fail(409, '目标文件夹已存在');
-        fs.renameSync(from, to);
-      }
-    }
     return next;
   };
 
-  const afterChange = (c, old) => {
+  const afterChange = (c, old, renames = new Map()) => {
     if (!old || (old.lemon?.contest || '') !== (c.lemon?.contest || '')) {
       if (c.lemon?.contest) ctx.lemon.relink(c);
     } else if (c.lemon?.contest) {
       if (old.subFolder !== c.subFolder || JSON.stringify(old.problems) !== JSON.stringify(c.problems))
         ctx.lemon.rt(c).needTasks = true;
+    }
+    if (renames.size && ctx.lemon.linked(c)) {
+      ctx.lemon.rt(c).remote = null;
+      ctx.lemon.flushUploads(c).then(() => {
+        if (c.lemon.interval === 0) { ctx.lemon.rt(c).pending = true; ctx.lemon.kick(c); }
+      });
     }
     if (!old || old.endTime !== c.endTime) ctx.lemon.timesChanged(c);
   };
@@ -453,11 +452,10 @@ export function setupAdminRoutes(router, ctx) {
   route('PUT', '/api/admin/contests/:id', async (req, res, p) => {
     const c = getContest(p.id);
     const body = await readJson(req);
-    const old = structuredClone(c);
     await checkLemonLink(c, body);
-    Object.assign(c, applyContest(c, body, false));
-    ctx.store.save();
-    afterChange(c, old);
+    const old = structuredClone(c);
+    const renames = commitContestEdit(ctx, c, applyContest(c, body, false), body.problems);
+    afterChange(c, old, renames);
     return contestJson(c);
   });
 

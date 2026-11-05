@@ -74,7 +74,7 @@ async function waitFor(what, fn, timeout = 60000) {
 try {
   const admin = client();
   const st = await admin('GET', '/api/status');
-  assert.equal(st.version, '0.1.3');
+  assert.equal(st.version, '0.1.4');
   assert.equal(st.user, null);
 
   step('admin login, CSRF header');
@@ -317,6 +317,27 @@ try {
   step('rename contest moves the folder, password change');
   await admin('PUT', '/api/admin/contests/' + A.id, { name: '测试赛2' });
   assert.ok(fs.existsSync(path.join(dataDir, 'submissions', '测试赛2', 'SC-00001', 'aplusb.cpp')));
+  if (LEMON) {
+    step('renamed files re-sync; post-contest judging still uses only unjudged code');
+    const C = '/api/contests/' + lemonContest;
+    const beforeRename = structuredClone(app.ctx.data.submissions[A.id]);
+    // I/O names stay unchanged: filenames change, never contestants' source code.
+    await lemon('PUT', C + '/tasks/0', { json: { sourceFileName: 'sum', problemTitle: '求和' }, token: lemonKey });
+    await admin('PUT', '/api/admin/contests/' + A.id, { problems: [{ name: 'sum', previousName: 'aplusb', title: '求和' }] });
+    app.ctx.lemon.rt(app.ctx.contest(A.id)).finalTriedAt = 0;
+    for (const user of [byName['SC-00001'], byName['SC-00002']]) {
+      assert.deepEqual(app.ctx.data.submissions[A.id][user.id].sum, beforeRename[user.id].aplusb);
+      assert.equal(app.ctx.data.submissions[A.id][user.id].aplusb, undefined);
+    }
+    board = await waitFor('renamed files post-contest judge', async () => {
+      const b = await admin('GET', `/api/admin/contests/${A.id}/board`);
+      return b.lemon.finalDone && !b.lemon.busy && b.rows.every(r => r.cells.sum?.judged && r.cells.sum.synced) && b;
+    });
+    assert.deepEqual(board.rows.map(r => r.cells.sum.score), [75, 75]);
+    assert.deepEqual([board.lemon.history[0].kind, board.lemon.history[0].mode], ['final', 'unjudged']);
+    assert.equal((await admin('GET', `/api/admin/contests/${A.id}/source/${byName['SC-00001'].id}/sum`)).code, WA);
+    assert.equal(fs.readFileSync(path.join(LEMON_ROOT, lemonContest, 'source', 'SC-00001', 'sum.cpp'), 'utf8'), WA);
+  }
   await admin('PUT', '/api/admin/password', { current: '123456', password: '12' }, { expect: 400 });
   await admin('PUT', '/api/admin/password', { current: '123456', password: 'admin-pass' });
   assert.equal((await admin('GET', '/api/status')).user.defaultPassword, false);

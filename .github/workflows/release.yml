@@ -23,6 +23,9 @@ jobs:
       - name: Test
         run: node tests/smoke.mjs
 
+      - name: Submission rename regression
+        run: node --test tests/problem-rename.mjs
+
       - name: Login layout regression
         run: node tests/login-layout.mjs
 
@@ -60,6 +63,9 @@ jobs:
 
       - name: Test
         run: node tests/smoke.mjs
+
+      - name: Submission rename regression
+        run: node --test tests/problem-rename.mjs
 
       - name: Login layout regression
         run: node tests/login-layout.mjs

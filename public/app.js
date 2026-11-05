@@ -601,6 +601,7 @@ async function renderContestForm(id) {
     name: '', title: '', startTime: t0.getTime(), endTime: t0.getTime() + 4 * 3600000, earlyMinutes: 30,
     problems: [{ name: '', title: '' }], groups: [], subFolder: false, downZipPassword: '', lemon: { contest: '', interval: null },
   };
+  if (contest) for (const problem of f.problems) problem.previousName = problem.name;
   let pendingDownZip = null; // File chosen before the contest exists
   let lemonDownZip = null; // import down.zip from this LemonServer contest after saving
 
@@ -638,8 +639,9 @@ async function renderContestForm(id) {
   append(main, h('div', { class: 'section-title' }, '题目'),
     h('div', { class: 'card' }, plist,
       h('div', { class: 'flex', style: { marginTop: '12px' } },
-        h('button', { class: 'small', onclick: () => { f.problems.push({ name: '', title: '' }); renderProblems(); } }, '添加题目'),
-        lemonOn ? h('button', { class: 'small', onclick: () => importFromLemon() }, '从 LemonServer 导入') : null)));
+        h('button', { class: 'small', onclick: () => { f.problems.push({ name: '', title: '', previousName: null }); renderProblems(); } }, '添加题目'),
+        lemonOn ? h('button', { class: 'small', onclick: () => importFromLemon() }, '从 LemonServer 导入') : null)),
+    h('div', { class: 'section-foot' }, '修改文件名会同步改名已提交的代码文件，保留提交时间和次数；不会修改代码内容'));
 
   // --- groups
   const gbox = h('div', { class: 'flex' });
@@ -758,7 +760,7 @@ async function renderContestForm(id) {
       { label: '导入', primary: true, onClick: async () => {
         const r = await api('GET', '/api/admin/lemon/contests/' + enc(sel.value));
         if (!r.tasks.length) { toast('该比赛没有试题', true); return false; }
-        f.problems = r.tasks.map((t) => ({ name: t.name, title: t.title || t.name }));
+        f.problems = r.tasks.map((t) => ({ name: t.name, title: t.title || t.name, previousName: contest?.problems.find(p => p.name === t.name)?.name ?? null }));
         f.lemon.contest = r.name;
         if (!f.name) { f.name = r.name; main.querySelector('input').value = r.name; }
         if (withZip.checked && r.downZip) { lemonDownZip = r.name; pendingDownZip = null; }

@@ -2,7 +2,7 @@
 
 信息学竞赛程序回收系统：选手在浏览器中提交源代码，管理员管理用户与比赛，可与 [LemonServer](https://github.com/GetawayCar1024/LemonServer) 联动评测。
 
-版本 0.1.3 · Node.js ≥ 22.2，无第三方依赖。
+版本 0.1.4 · Node.js ≥ 22.2，无第三方依赖。
 
 ## 安装
 
@@ -75,10 +75,20 @@ Windows 下也可以双击 `start.bat`。
 - 比赛结束后，等最后一次任务结束，再执行一次任务评测未评测的代码。
 - 比赛时间只在 CodeHub 中设置（LemonServer 没有比赛时间，成绩与评测详情任何时候都能看到）：它决定选手何时能进入和提交、定时评测从何时算起、何时执行赛后评测。
 
+### 修改题目文件名
+
+在“编辑比赛”中修改题目名（文件名）并保存，会同步改名所有已提交的对应 `.cpp` 文件，以及启用的同名子文件夹；提交内容、时间和次数保持不变。仅修改显示名称或调整题目顺序不会移动文件。目标文件已存在、原文件缺失或正在同步／评测时会拒绝改名，不覆盖已有代码；普通写入失败会回滚本次改名。
+
+关联 LemonServer 时，改名后的代码会按新名字重新同步；请确保 LemonServer 的源程序名也已对应修改。不会改写代码里的 `freopen` 等字符串。
+
+API：`PUT /api/admin/contests/{id}` 的 `problems` 项可带 `previousName` 指定原题目，例如 `{"name":"sum","previousName":"aplusb","title":"求和"}`；新添加的题目可用 `previousName: null`。不带此字段时，仅在一进一出的对应关系唯一时推断改名，多题改名请显式提供原名。
+
 ## 测试
 
 ```bash
 node tests/smoke.mjs                                          # 只测 CodeHub
+node --test tests/problem-rename.mjs                          # 改名、冲突、回滚及同步
+node tests/login-layout.mjs                                  # 浏览器界面回归（需要 Chromium / CHROME_BIN）
 node tests/smoke.mjs http://127.0.0.1:18080 D:\tmp\contests   # 连同 LemonServer（新配置、令牌 123456、需要 g++）
 ```
 
@@ -87,6 +97,7 @@ node tests/smoke.mjs http://127.0.0.1:18080 D:\tmp\contests   # 连同 LemonServ
 - `server.js`：启动参数。
 - `src/app.js`：HTTP 服务、会话、静态文件；`src/routes-user.js`：选手接口；`src/routes-admin.js`：管理接口。
 - `src/lemon.js`：LemonServer 客户端与联动调度（上传、评测任务）。
+- `src/contest-edit.js`：比赛／题目改名，提交记录迁移和失败回滚。
 - `src/store.js`：JSON 数据文件；`src/zip.js`：打包下载。
 - `public/`：网页前端（原生 JS，无需构建）。
 - `packaging/`：发布包（`node packaging/package.mjs windows|linux`，`packaging/linux/build-deb.sh`）；推送 `v*` 标签后由 GitHub Actions 构建并发布。

@@ -127,7 +127,8 @@ export class LemonLink {
   // Serialised per contest; resolves to true when nothing is left to upload.
   flushUploads(c) {
     const rt = this.rt(c);
-    rt.chain = rt.chain.then(() => this.doFlush(c)).catch(() => false);
+    rt.uploads = (rt.uploads || 0) + 1;
+    rt.chain = rt.chain.then(() => this.doFlush(c)).catch(() => false).finally(() => { rt.uploads--; });
     return rt.chain;
   }
 
