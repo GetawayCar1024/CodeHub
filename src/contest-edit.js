@@ -53,10 +53,10 @@ export function commitContestEdit(ctx, contest, next, rows) {
   const data = ctx.data, id = contest.id;
   const oldContest = { ...contest }, oldSubmissions = data.submissions[id];
   const oldPending = data.lemonPending[id], oldState = data.lemonState[id];
-  const submissions = oldSubmissions && { ...oldSubmissions };
-  const pending = oldPending && {};
+  const submissions = renames.size && oldSubmissions ? { ...oldSubmissions } : oldSubmissions;
+  const pending = renames.size && oldPending ? {} : null;
   const moves = [];
-  for (const [uid, problems] of Object.entries(oldSubmissions || {})) {
+  for (const [uid, problems] of Object.entries(renames.size ? oldSubmissions || {} : {})) {
     for (const [from, to] of renames) {
       if (!Object.hasOwn(problems, from)) continue;
       if (Object.keys(problems).some(name => name.toLowerCase() === to.toLowerCase() && !renames.has(name)))
@@ -124,7 +124,7 @@ export function commitContestEdit(ctx, contest, next, rows) {
     }
     Object.assign(contest, next);
     if (submissions) data.submissions[id] = submissions;
-    if (oldPending || (ctx.lemon.linked(contest) && renames.size)) data.lemonPending[id] = nextPending;
+    if (renames.size && (oldPending || ctx.lemon.linked(contest))) data.lemonPending[id] = nextPending;
     if (ctx.lemon.linked(contest) && renames.size) data.lemonState[id] = { ...ctx.lemon.state(contest), finalDone: false };
     ctx.store.flush();
   } catch (error) {

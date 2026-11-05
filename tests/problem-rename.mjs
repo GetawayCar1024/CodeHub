@@ -180,9 +180,12 @@ test('renames are deferred while uploads run, then re-upload under the new name'
   const uploading = app.ctx.lemon.flushUploads(c);
   await new Promise(resolve => setImmediate(resolve));
   try {
+    // Non-file edits remain available; they must not replace an in-flight queue's object.
+    await admin('PUT', endpoint, { title: 'new display title' });
     await admin('PUT', endpoint, { problems: [{ name: 'renamed', previousName: 'alpha' }, { name: 'beta' }] }, 409);
     assert.equal(fs.readFileSync(file('alice', 'alpha'), 'utf8'), alpha);
   } finally { finishUpload(); await uploading; }
+  assert.deepEqual(app.ctx.lemon.pendingOf(c), {}, 'a display-only edit must not restore a completed upload');
   app.ctx.lemon.state(c).finalDone = true;
   await admin('PUT', endpoint, { problems: [{ name: 'renamed', previousName: 'alpha' }, { name: 'beta' }] });
   await app.ctx.lemon.flushUploads(c);
