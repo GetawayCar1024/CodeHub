@@ -870,6 +870,14 @@ const TASK_STATE = { running: '准备中', queued: '排队中', judging: '评测
 
 async function renderBoard(id) {
   let b = await api('GET', `/api/admin/contests/${id}/board`);
+  let order = { key: 'username', direction: 1 }, anchor = null;
+  const selected = new Set();
+  const selectedSource = () => {
+    if (selected.size !== 1) return null;
+    const [uid, name] = [...selected][0].split('|');
+    const row = b.rows.find(row => String(row.id) === uid), problem = b.contest.problems.find(problem => problem.name === name);
+    return row?.cells[name] && problem ? { row, problem } : null;
+  };
   const main = shell('contests');
   const body = h('div');
   main.appendChild(body);
@@ -902,6 +910,36 @@ async function renderBoard(id) {
 
     // the result on LemonServer: score, or the compile state (NS, CE, …) when compiling failed
     const COMPILE = ['', 'NS', 'CE', 'CTLE', 'IC', 'NG'];
+    const rows = CodeHubBoardSort.sort(b.rows, order.key, order.direction);
+    const valid = new Set(rows.flatMap(row => c.problems.map(problem => row.id + '|' + problem.name)));
+    for (const key of selected) if (!valid.has(key)) selected.delete(key);
+    const sortHeader = (label, key, attrs = {}) => h('th', { ...attrs, 'aria-sort': order.key === key ? order.direction > 0 ? 'ascending' : 'descending' : 'none' },
+      h('button', { class: 'table-sort', 'data-sort': key, disabled: key !== 'username' && key !== 'realName' && !scored, onclick: () => {
+        order = { key, direction: order.key === key ? -order.direction : key === 'username' || key === 'realName' ? 1 : -1 }; render();
+      } }, label, order.key === key ? (order.direction > 0 ? ' ↑' : ' ↓') : ''));
+    const paint = () => {
+      table.querySelectorAll('[data-cell]').forEach(cell => { const on = selected.has(cell.dataset.cell); cell.classList.toggle('selected', on); cell.setAttribute('aria-selected', String(on)); });
+      codeButton.disabled = !selectedSource();
+    };
+    const selectCell = (event, row, problem) => {
+      const key = row.id + '|' + problem.name;
+      if (event.shiftKey && anchor) {
+        const a = rows.findIndex(item => item.id === anchor.row), z = rows.indexOf(row);
+        const left = c.problems.findIndex(item => item.name === anchor.problem), right = c.problems.indexOf(problem);
+        if (a >= 0 && left >= 0) {
+          if (!event.ctrlKey && !event.metaKey) selected.clear();
+          for (let i = Math.min(a, z); i <= Math.max(a, z); i++) for (let j = Math.min(left, right); j <= Math.max(left, right); j++) selected.add(rows[i].id + '|' + c.problems[j].name);
+        }
+      } else if (selected.has(key)) selected.delete(key);
+      else { if (!event.ctrlKey && !event.metaKey) selected.clear(); selected.add(key); }
+      anchor = { row: row.id, problem: problem.name }; paint();
+    };
+    const selectRow = (event, row) => {
+      const keys = c.problems.map(problem => row.id + '|' + problem.name), remove = keys.every(key => selected.has(key));
+      if (!remove && !event.ctrlKey && !event.metaKey) selected.clear();
+      for (const key of keys) if (remove) selected.delete(key); else selected.add(key);
+      paint();
+    };
     const result = (s, p) => {
       if (s.score === null || s.score === undefined) return null;
       const full = b.fullScores?.[p.name];
@@ -909,24 +947,25 @@ async function renderBoard(id) {
       return h('span', { class: 'cell-score ' + cls }, s.compileState ? `0 ${COMPILE[s.compileState] || ''}` : s.score);
     };
     const table = h('table', { class: 'list' },
-      h('thead', null, h('tr', null, h('th', null, '账号'), h('th', null, '姓名'),
-        c.problems.map((p) => h('th', { class: 'cell' }, p.title !== p.name ? `${p.title} (${p.name})` : p.name)),
-        scored ? h('th', { class: 'cell' }, '总分') : null,
+      h('thead', null, h('tr', null, sortHeader('账号', 'username'), sortHeader('姓名', 'realName'),
+        c.problems.map((p) => sortHeader(p.title !== p.name ? `${p.title} (${p.name})` : p.name, 'problem:' + p.name, { class: 'cell' })),
+        scored ? sortHeader('总分', 'total', { class: 'cell' }) : null,
         h('th', { class: 'cell' }, '已提交'),
         h('th', { class: 'cell' }, '提前结束'))),
-      h('tbody', null, b.rows.map((r) => h('tr', null,
-        h('td', { class: 'mono' }, r.username), h('td', null, r.realName),
+      h('tbody', null, rows.map((r) => h('tr', { 'data-user': r.username },
+        h('td', { class: 'mono table-selectable', onclick: event => selectRow(event, r) }, r.username), h('td', { class: 'table-selectable', onclick: event => selectRow(event, r) }, r.realName),
         c.problems.map((p) => {
           const s = r.cells[p.name];
-          if (!s) return h('td', { class: 'cell muted' }, '—');
+          const attrs = { 'data-cell': r.id + '|' + p.name, 'aria-selected': String(selected.has(r.id + '|' + p.name)),
+            onclick: event => selectCell(event, r, p), ondblclick: () => { if (s) adminSource(c, r, p); } };
+          if (!s) return h('td', { ...attrs, class: 'cell muted table-selectable' + (selected.has(r.id + '|' + p.name) ? ' selected' : '') }, '—');
           let state = null;
           if (s.synced === false) state = h('span', { class: 'cell-state muted' }, '待上传');
           else if (s.judged === true) state = result(s, p) || h('span', { class: 'cell-state ok-text' }, '已评测');
           else if (s.judged === false) state = h('span', { class: 'cell-state warn-text' }, '未评测');
           return h('td', {
-            class: 'cell has clickable',
-            title: `${fmtTime(s.time)} · 第 ${s.count} 次提交 · 点击查看代码`,
-            onclick: () => adminSource(c, r, p),
+            ...attrs, class: 'cell has table-selectable' + (selected.has(r.id + '|' + p.name) ? ' selected' : ''),
+            title: `${fmtTime(s.time)} · 第 ${s.count} 次提交 · 双击查看代码`,
           }, h('span', { class: 'cell-size' }, fmtSize(s.size)), state);
         }),
         scored ? h('td', { class: 'cell' }, r.total === null ? h('span', { class: 'muted' }, '—') : h('b', null, r.total)) : null,
@@ -934,18 +973,20 @@ async function renderBoard(id) {
         h('td', { class: 'cell' }, r.finishedAt ? [h('span', { title: fmtTime(r.finishedAt) }, fmtTime(r.finishedAt, false).slice(6)),
           h('a', { class: 'undo-link', title: '允许该选手继续提交', onclick: () => undoFinish(r) }, '撤销')] : h('span', { class: 'muted' }, '—'))))));
 
-    put(body, 
+    const codeButton = h('button', { disabled: !selectedSource(), onclick: () => { const cell = selectedSource(); if (cell) adminSource(c, cell.row, cell.problem); } }, '查看代码');
+    put(body,
       h('div', { class: 'page-head' },
         h('h2', null, c.title),
         h('span', { class: 'badge ' + PHASE_BADGE[c.phase] }, PHASE[c.phase]),
         h('span', { class: 'muted' }, fmtRange(c.startTime, c.endTime)),
         h('div', { class: 'right' },
+          codeButton,
           submitted ? h('a', { class: 'btn', href: `/api/admin/contests/${c.id}/archive.zip` }, '下载全部代码') : null,
           h('button', { onclick: () => go(`#/admin/c/${c.id}/edit`) }, '编辑'))),
       lemonCard,
       b.rows.length ? h('div', { class: 'table-wrap' }, table) : h('div', { class: 'card empty' }, '没有可参赛的用户'),
       h('div', { class: 'section-foot' },
-        `${b.rows.length} 名选手 · 提交 ${submitted}` + (scored ? ` · 已评测 ${judged}` : '') + (finished ? ` · 提前结束 ${finished}` : '') + (submitted ? ' · 点击格子查看代码' : '')));
+        `${b.rows.length} 名选手 · 提交 ${submitted}` + (scored ? ` · 已评测 ${judged}` : '') + (finished ? ` · 提前结束 ${finished}` : '') + (submitted ? ' · 单击选中／取消 · 双击查看代码' : '')));
   };
 
   const reload = async () => {

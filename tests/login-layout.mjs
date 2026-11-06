@@ -27,7 +27,7 @@ let browserError = '';
 browser.stderr.on('data', data => { browserError = (browserError + data).slice(-8192); });
 browser.on('error', error => { browserError += error.message; });
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-const alphaCode = '// 测试😀\r\n\tint main() { return 0; }\r\n\r\n';
+const alphaCode = '// 测试😀\r\n' + Array.from({ length: 48 }, (_, i) => `\t// line ${i + 1}`).join('\r\n') + '\r\n\r\n';
 let socket, send;
 try {
   let targets;
@@ -59,6 +59,13 @@ try {
   };
   const copyFromViewer = async mode => {
     await wait('!!document.querySelector(".overlay .editor pre")');
+    const lastLine = await evaluate(`(() => {
+      const pre=document.querySelector('.overlay .editor pre'), gutter=document.querySelector('.overlay .gutter');
+      pre.scrollTop=pre.scrollHeight;pre.dispatchEvent(new Event('scroll'));
+      const text=gutter.firstChild,range=document.createRange();range.setStart(text,text.textContent.lastIndexOf('\\n')+1);range.setEnd(text,text.length);
+      const line=range.getBoundingClientRect(),box=gutter.getBoundingClientRect();return {bottom:line.bottom,visibleBottom:box.bottom,top:line.top,visibleTop:box.top};
+    })()`);
+    assert.ok(lastLine.bottom <= lastLine.visibleBottom + 1 && lastLine.top >= lastLine.visibleTop - 1, `the trailing empty line must be fully visible: ${JSON.stringify(lastLine)}`);
     assert.ok(await evaluate(`[...document.querySelectorAll('.overlay button')].some(button=>button.textContent==='复制代码')`), 'the code viewer must have a copy button');
     await evaluate(`(() => {
       window.clipboardOriginal ||= {descriptor:Object.getOwnPropertyDescriptor(navigator,'clipboard'),exec:document.execCommand};
@@ -127,6 +134,49 @@ try {
   assert.equal(app.ctx.data.submissions[contestId][user.id]['new-alpha'].count, 2);
   console.log('PASS contest editor renames the corresponding submissions after reordering');
   for (let i = 0; i < 200 && !await evaluate(`location.hash === '#/admin/c/${contestId}' && !!document.querySelector('.user-btn')`); i++) await delay(25);
+
+  await evaluate(`api('POST','/api/admin/users/import',{text:'bob,test-password,Anna\\ncharlie,test-password,Mike'})`);
+  const extraUsers = app.ctx.data.users.filter(item => ['bob', 'charlie'].includes(item.username));
+  const originalName = user.realName, originalRemote = app.ctx.lemon.rt(contest).remote;
+  const originalStatus = app.ctx.lemon.status.bind(app.ctx.lemon);
+  user.realName = 'Zoe';
+  // Real board API, with only the external judging response replaced by a deterministic fixture.
+  app.ctx.lemon.rt(contest).remote = {
+    tasks: contest.problems.map(problem => ({ sourceFileName: problem.name, totalScore: 100 })),
+    contestants: [user, ...extraUsers].map(item => ({ name: item.username, tasks: (item.username === 'alice' ? [90, 10] : item.username === 'bob' ? [50, 90] : [null, null]).map(score => ({ score, judged: score !== null, compileState: 0 })) })),
+  };
+  for (const extra of extraUsers) app.ctx.data.submissions[contestId][extra.id] = {
+    'new-beta': { time: Date.now(), size: 6, count: 1, lang: 'C++' },
+    'new-alpha': { time: Date.now(), size: 7, count: 1, lang: 'C++' },
+  };
+  app.ctx.lemon.status = async value => value.id === contestId ? { linked: true, configured: true, reachable: true, contest: 'fixture', history: [], link: '#' } : originalStatus(value);
+  await evaluate('route()');
+  await wait('!!document.querySelector("[data-sort=total]")');
+  const order = () => evaluate(`[...document.querySelectorAll('tbody tr[data-user]')].map(row=>row.dataset.user)`);
+  await evaluate(`document.querySelector('[data-sort=total]').click()`);
+  assert.deepEqual(await order(), ['bob', 'alice', 'charlie']);
+  await evaluate(`document.querySelector('[data-sort="problem:new-beta"]').click()`);
+  assert.deepEqual(await order(), ['alice', 'bob', 'charlie']);
+  await evaluate(`document.querySelector('[data-sort="problem:new-beta"]').click()`);
+  assert.deepEqual(await order(), ['bob', 'alice', 'charlie']);
+  await evaluate(`document.querySelector('[data-sort=realName]').click()`);
+  assert.deepEqual(await order(), ['bob', 'charlie', 'alice']);
+  await evaluate(`document.querySelector('[data-sort=username]').click()`);
+  assert.deepEqual(await order(), ['alice', 'bob', 'charlie']);
+  const cell = `[data-cell="${user.id}|new-alpha"]`;
+  await evaluate(`document.querySelector(${JSON.stringify(cell)}).click()`);
+  assert.ok(await evaluate(`document.querySelector(${JSON.stringify(cell)}).classList.contains('selected')`));
+  await evaluate(`document.querySelector(${JSON.stringify(cell)}).click()`);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(cell)}).classList.contains('selected')`), false);
+  await evaluate(`document.querySelector(${JSON.stringify(cell)}).dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))`);
+  await wait('!!document.querySelector(".overlay .editor pre")');
+  await evaluate(`document.querySelector('.overlay .modal-head button').click()`);
+  user.realName = originalName; app.ctx.lemon.status = originalStatus; app.ctx.lemon.rt(contest).remote = originalRemote;
+  app.ctx.data.users = app.ctx.data.users.filter(item => !extraUsers.includes(item));
+  for (const extra of extraUsers) delete app.ctx.data.submissions[contestId][extra.id];
+  await evaluate('route()');
+  console.log('PASS board score/name ordering and click-again deselection');
+
   await evaluate(`adminSource({id:${contestId}},{id:${user.id},username:'alice'},{name:'new-alpha'})`);
   await copyFromViewer('modern');
   await copyFromViewer('denied');

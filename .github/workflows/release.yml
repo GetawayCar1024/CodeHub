@@ -29,6 +29,9 @@ jobs:
       - name: Timed material release regression
         run: node --test tests/material-release.mjs
 
+      - name: Result sorting regression
+        run: node --test tests/board-sort.mjs
+
       - name: Login layout regression
         run: node tests/login-layout.mjs
 
@@ -72,6 +75,9 @@ jobs:
 
       - name: Timed material release regression
         run: node --test tests/material-release.mjs
+
+      - name: Result sorting regression
+        run: node --test tests/board-sort.mjs
 
       - name: Login layout regression
         run: node tests/login-layout.mjs
