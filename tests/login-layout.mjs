@@ -104,6 +104,13 @@ try {
   assert.ok(small.height > 240, 'short windows must scroll instead of clipping the form');
   assert.ok(small.buttonTop >= 0 && small.buttonBottom <= 241, 'login button must remain reachable');
   console.log('PASS short login viewport stays scrollable and usable');
+  for (const manual of [false, true]) {
+    await evaluate(`S.status.manual=${manual};renderLogin()`);
+    const gaps = await evaluate(`(() => {const items=[...document.querySelectorAll('.login .stack > *')].map(el=>el.getBoundingClientRect());return items.slice(1).map((r,i)=>Math.round((r.top-items[i].bottom)*10)/10);})()`);
+    assert.ok(gaps.every(gap => Math.abs(gap - gaps[0]) < 0.6), `login fields and button must be evenly spaced: ${gaps}`);
+  }
+  await evaluate('S.status.manual=false;renderLogin()');
+  console.log('PASS login fields and button are evenly spaced');
   await send('Emulation.setDeviceMetricsOverride', { width: 1024, height: 600, deviceScaleFactor: 1, mobile: false });
   await evaluate(`document.querySelector('.login input[type=text]').value='admin';document.querySelector('.login input[type=password]').value='123456';document.querySelector('form.login').requestSubmit()`);
   for (let i = 0; i < 200 && !await evaluate('!!document.querySelector(".user-btn")'); i++) await delay(25);
@@ -124,14 +131,31 @@ try {
   await evaluate(`(() => {
     const rows=document.querySelectorAll('.prow');
     for(const [i,name] of ['new-alpha','new-beta'].entries()){const input=rows[i].querySelector('input');input.value=name;input.dispatchEvent(new Event('input',{bubbles:true}));}
-    rows[1].querySelector('button').click();
-    document.querySelector('.page-head button.primary').click();
   })()`);
+  // Drag the second row's handle above the first one with real mouse input.
+  const dragPoints = await evaluate(`(() => {
+    document.querySelector('.problem-rows').scrollIntoView({block:'center'});
+    const [a,b]=[...document.querySelectorAll('.prow')].map(row=>row.getBoundingClientRect());
+    const handle=document.querySelectorAll('.prow .drag-handle')[1].getBoundingClientRect();
+    return {x:handle.left+handle.width/2,y:handle.top+handle.height/2,targetY:a.top+2};
+  })()`);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: dragPoints.x, y: dragPoints.y, button: 'left', buttons: 1, clickCount: 1 });
+  for (const y of [dragPoints.y - 10, dragPoints.targetY + 6, dragPoints.targetY])
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: dragPoints.x, y, button: 'left', buttons: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: dragPoints.x, y: dragPoints.targetY, button: 'left', buttons: 0, clickCount: 1 });
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('.prow')].map(row=>[row.querySelector('.idx').textContent,row.querySelectorAll('input')[0].value,row.querySelectorAll('input')[1].value])`),
+    [['1', 'new-beta', ''], ['2', 'new-alpha', '']], 'dragging must reorder rows without bringing back the old names as display titles');
+  // Keyboard on the handle moves the row too; move it down and back up again.
+  await evaluate(`document.querySelectorAll('.prow .drag-handle')[0].dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}))`);
+  await evaluate(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',bubbles:true}))`);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('.prow')].map(row=>row.querySelector('input').value)`), ['new-beta', 'new-alpha']);
+  await evaluate(`document.querySelector('.page-head button.primary').click()`);
   for (let i = 0; i < 200 && contest.problems[0].name !== 'new-beta'; i++) await delay(25);
   assert.deepEqual(contest.problems.map(p => p.name), ['new-beta', 'new-alpha']);
   assert.equal(await fs.readFile(app.ctx.submissionFile(contest, 'alice', 'new-alpha'), 'utf8'), alphaCode);
   assert.equal(await fs.readFile(app.ctx.submissionFile(contest, 'alice', 'new-beta'), 'utf8'), 'beta!\n');
   assert.equal(app.ctx.data.submissions[contestId][user.id]['new-alpha'].count, 2);
+  assert.deepEqual(contest.problems.map(p => p.title), ['new-beta', 'new-alpha'], 'renamed problems without a custom title must not keep the old name');
   console.log('PASS contest editor renames the corresponding submissions after reordering');
   for (let i = 0; i < 200 && !await evaluate(`location.hash === '#/admin/c/${contestId}' && !!document.querySelector('.user-btn')`); i++) await delay(25);
 
@@ -153,8 +177,13 @@ try {
   await evaluate('route()');
   await wait('!!document.querySelector("[data-sort=total]")');
   const order = () => evaluate(`[...document.querySelectorAll('tbody tr[data-user]')].map(row=>row.dataset.user)`);
+  const icon = key => evaluate(`document.querySelector('[data-sort="${key}"] .sort-icon').className`);
+  assert.equal(await icon('username'), 'sort-icon asc');
+  assert.equal(await icon('total'), 'sort-icon');
   await evaluate(`document.querySelector('[data-sort=total]').click()`);
   assert.deepEqual(await order(), ['bob', 'alice', 'charlie']);
+  assert.equal(await icon('total'), 'sort-icon desc');
+  assert.equal(await icon('username'), 'sort-icon');
   await evaluate(`document.querySelector('[data-sort="problem:new-beta"]').click()`);
   assert.deepEqual(await order(), ['alice', 'bob', 'charlie']);
   await evaluate(`document.querySelector('[data-sort="problem:new-beta"]').click()`);
@@ -164,18 +193,15 @@ try {
   await evaluate(`document.querySelector('[data-sort=username]').click()`);
   assert.deepEqual(await order(), ['alice', 'bob', 'charlie']);
   const cell = `[data-cell="${user.id}|new-alpha"]`;
+  assert.equal(await evaluate(`!!document.querySelector('.selected, [aria-selected]') || [...document.querySelectorAll('.page-head button')].some(button=>button.textContent==='查看代码')`), false, 'the board has no cell selection');
   await evaluate(`document.querySelector(${JSON.stringify(cell)}).click()`);
-  assert.ok(await evaluate(`document.querySelector(${JSON.stringify(cell)}).classList.contains('selected')`));
-  await evaluate(`document.querySelector(${JSON.stringify(cell)}).click()`);
-  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(cell)}).classList.contains('selected')`), false);
-  await evaluate(`document.querySelector(${JSON.stringify(cell)}).dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))`);
   await wait('!!document.querySelector(".overlay .editor pre")');
   await evaluate(`document.querySelector('.overlay .modal-head button').click()`);
   user.realName = originalName; app.ctx.lemon.status = originalStatus; app.ctx.lemon.rt(contest).remote = originalRemote;
   app.ctx.data.users = app.ctx.data.users.filter(item => !extraUsers.includes(item));
   for (const extra of extraUsers) delete app.ctx.data.submissions[contestId][extra.id];
   await evaluate('route()');
-  console.log('PASS board score/name ordering and click-again deselection');
+  console.log('PASS board score/name ordering, sort indicators and click-to-view');
 
   await evaluate(`adminSource({id:${contestId}},{id:${user.id},username:'alice'},{name:'new-alpha'})`);
   await copyFromViewer('modern');

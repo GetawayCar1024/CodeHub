@@ -276,8 +276,9 @@ table.list td.cell.clickable { cursor: pointer; }
 .login-wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px; }
 .login { width: 360px; max-width: 100%; }
 .login h2 { padding-bottom: 12px; margin-bottom: 18px; border-bottom: 0.5px solid var(--sep); }
-.login .stack > input { width: 100%; height: 40px; }
-.login button.primary { width: 100%; height: 40px; margin-top: 4px; }
+.login .stack > input { display: block; width: 100%; height: 40px; }
+.login .stack > label.check { display: flex; }
+.login button.primary { display: flex; width: 100%; height: 40px; }
 
 /* ---------- contestant page ---------- */
 .contest-head { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 0.5px solid var(--sep); }
@@ -338,8 +339,12 @@ table.list td.cell.clickable { cursor: pointer; }
 .editor pre::after { content: '\200b'; }
 .table-sort { color: inherit; font: inherit; font-weight: inherit; background: transparent; padding: 0; border-radius: 3px; }
 .table-sort:hover:not(:disabled) { color: var(--blue); background: transparent; }
-.table-selectable { cursor: pointer; user-select: none; }
-table.list td.selected { box-shadow: inset 0 0 0 2px var(--blue); }
+.sort-icon { display: inline-flex; flex-direction: column; gap: 2px; margin-left: 4px; vertical-align: middle; }
+.sort-icon i { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; opacity: 0.35; }
+.sort-icon .up { border-bottom: 4px solid currentColor; }
+.sort-icon .down { border-top: 4px solid currentColor; }
+.sort-icon.asc .up, .sort-icon.desc .down { opacity: 1; color: var(--text); }
+.sort-icon.asc .down, .sort-icon.desc .up { visibility: hidden; }
 
 /* ---------- modal / menu / toast ---------- */
 .overlay {
@@ -391,6 +396,13 @@ table.list td.selected { box-shadow: inset 0 0 0 2px var(--blue); }
 .problem-rows .prow { display: flex; gap: 8px; align-items: center; }
 .problem-rows .prow + .prow { margin-top: 8px; }
 .problem-rows .prow .idx { width: 22px; color: var(--muted); text-align: right; }
+.problem-rows.sorting { user-select: none; }
+.problem-rows .prow.dragging { opacity: 0.6; }
+.drag-handle { width: 20px; height: 32px; padding: 0; flex: none; background: transparent; color: var(--muted); cursor: grab; touch-action: none; }
+.drag-handle:hover { background: var(--fill); color: var(--text2); }
+.problem-rows.sorting .drag-handle { cursor: grabbing; }
+/* 2×3 grip dots */
+.drag-handle span { display: block; width: 8px; height: 14px; background: radial-gradient(circle, currentColor 1.4px, transparent 1.6px) 0 0 / 4px 4.67px; }
 .pager { display: flex; justify-content: center; align-items: center; gap: 14px; margin-top: 14px; font-variant-numeric: tabular-nums; }
 .status-line { display: flex; gap: 6px 14px; flex-wrap: wrap; align-items: center; font-size: 13px; }
 .bulkbar {

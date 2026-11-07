@@ -649,7 +649,12 @@ async function renderContestForm(id) {
     downZipReleaseMinutes: 30, passwordReleaseMinutes: 0,
     problems: [{ name: '', title: '' }], groups: [], subFolder: false, downZipPassword: '', lemon: { contest: '', interval: null },
   };
-  if (contest) for (const problem of f.problems) problem.previousName = problem.name;
+  // In the editor, title holds only a custom display name; '' means "same as the file name".
+  // Keeping the saved copy of the old name here made it reappear (and be saved) after a rename + re-render.
+  for (const problem of f.problems) {
+    if (contest) problem.previousName = problem.name;
+    if (problem.title === problem.name) problem.title = '';
+  }
   let pendingDownZip = null; // File chosen before the contest exists
   let lemonDownZip = null; // import down.zip from this LemonServer contest after saving
 
@@ -677,13 +682,57 @@ async function renderContestForm(id) {
 
   // --- problems
   const plist = h('div', { class: 'problem-rows' });
+  const problemOf = new WeakMap(); // row element -> problem object, so reordering never depends on indexes
+  const renumber = () => plist.querySelectorAll('.prow .idx').forEach((el, i) => { el.textContent = i + 1; });
+  const moveProblem = (p, delta) => {
+    const i = f.problems.indexOf(p), j = i + delta;
+    if (i < 0 || j < 0 || j >= f.problems.length) return;
+    f.problems.splice(j, 0, f.problems.splice(i, 1)[0]);
+    renderProblems();
+    plist.querySelectorAll('.prow .drag-handle')[j]?.focus();
+  };
+  const startDrag = (event, rowEl) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    rowEl.classList.add('dragging');
+    plist.classList.add('sorting');
+    const onMove = (e) => {
+      // the dragged row goes before the first other row whose middle is below the pointer
+      const others = [...plist.children].filter((el) => el !== rowEl);
+      const next = others.find((el) => { const r = el.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; }) || null;
+      if (rowEl.nextElementSibling === next && (next || plist.lastElementChild === rowEl)) return;
+      plist.insertBefore(rowEl, next);
+      renumber();
+    };
+    const onEnd = () => {
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onEnd);
+      handle.removeEventListener('pointercancel', onEnd);
+      rowEl.classList.remove('dragging');
+      plist.classList.remove('sorting');
+      f.problems = [...plist.children].map((el) => problemOf.get(el));
+    };
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onEnd);
+    handle.addEventListener('pointercancel', onEnd);
+  };
   const renderProblems = () => {
-    put(plist, ...f.problems.map((p, i) => h('div', { class: 'prow' },
-      h('span', { class: 'idx' }, i + 1),
-      h('input', { type: 'text', class: 'grow mono', placeholder: '题目名（文件名）', value: p.name, oninput: (e) => { p.name = e.target.value.trim(); } }),
-      h('input', { type: 'text', class: 'grow', placeholder: '显示名称（可选）', value: p.title === p.name ? '' : p.title, oninput: (e) => { p.title = e.target.value; } }),
-      h('button', { class: 'plain small', title: '上移', disabled: i === 0, onclick: () => { f.problems.splice(i - 1, 0, f.problems.splice(i, 1)[0]); renderProblems(); } }, '↑'),
-      h('button', { class: 'plain small danger', title: '删除', onclick: () => { f.problems.splice(i, 1); renderProblems(); } }, '✕'))));
+    put(plist, ...f.problems.map((p, i) => {
+      const handle = h('button', { type: 'button', class: 'drag-handle', title: '拖动排序', 'aria-label': '拖动排序',
+        onkeydown: (e) => {
+          if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); moveProblem(p, e.key === 'ArrowUp' ? -1 : 1); }
+        } }, h('span', { 'aria-hidden': 'true' }));
+      const el = h('div', { class: 'prow' }, handle,
+        h('span', { class: 'idx' }, i + 1),
+        h('input', { type: 'text', class: 'grow mono', placeholder: '题目名（文件名）', value: p.name, oninput: (e) => { p.name = e.target.value.trim(); } }),
+        h('input', { type: 'text', class: 'grow', placeholder: '显示名称（可选）', value: p.title, oninput: (e) => { p.title = e.target.value; } }),
+        h('button', { class: 'plain small danger', title: '删除', onclick: () => { f.problems.splice(f.problems.indexOf(p), 1); renderProblems(); } }, '✕'));
+      handle.addEventListener('pointerdown', (e) => startDrag(e, el));
+      problemOf.set(el, p);
+      return el;
+    }));
   };
   renderProblems();
   append(main, h('div', { class: 'section-title' }, '题目'),
@@ -691,7 +740,7 @@ async function renderContestForm(id) {
       h('div', { class: 'flex', style: { marginTop: '12px' } },
         h('button', { class: 'small', onclick: () => { f.problems.push({ name: '', title: '', previousName: null }); renderProblems(); } }, '添加题目'),
         lemonOn ? h('button', { class: 'small', onclick: () => importFromLemon() }, '从 LemonServer 导入') : null)),
-    h('div', { class: 'section-foot' }, '修改文件名会同步改名已提交的代码文件，保留提交时间和次数；不会修改代码内容'));
+    h('div', { class: 'section-foot' }, '改文件名会同步改名已提交的代码'));
 
   // --- groups
   const gbox = h('div', { class: 'flex' });
@@ -740,7 +789,7 @@ async function renderContestForm(id) {
       row('down.zip 公开', minuteInput('downZipReleaseMinutes', 'down.zip 公开时间'), h('span', { class: 'muted' }, '分钟（开赛前）')),
       row('解压密码', input('downZipPassword', { name: 'downZipPassword', placeholder: '未设置密码' })),
       row('密码公布', minuteInput('passwordReleaseMinutes', '密码公布时间'), h('span', { class: 'muted' }, '分钟（开赛前）'))),
-    h('div', { class: 'section-foot' }, '0 表示开赛时；须满足：提前进入 ≥ down.zip 公开 ≥ 密码公布。题目名也在该时刻显示，无密码时同样适用。'));
+    h('div', { class: 'section-foot' }, '0 表示开赛时；须满足 提前进入 ≥ down.zip 公开 ≥ 密码公布。题目名与密码同时公布'));
 
   // --- storage
   const locked = contest?.hasSubmissions;
@@ -786,7 +835,7 @@ async function renderContestForm(id) {
       h('div', { class: 'group' },
         row('关联比赛', select, createBtn, lemonErr),
         row('评测', seg, minutesWrap)),
-      h('div', { class: 'section-foot' }, '只评测未评测的代码，上次未完成则跳过；比赛结束后再评测一次'));
+      h('div', { class: 'section-foot' }, '只评测未评测的代码，赛后再评测一次'));
     f._reloadLemon = loadLemon;
   }
 
@@ -810,7 +859,7 @@ async function renderContestForm(id) {
       { label: '导入', primary: true, onClick: async () => {
         const r = await api('GET', '/api/admin/lemon/contests/' + enc(sel.value));
         if (!r.tasks.length) { toast('该比赛没有试题', true); return false; }
-        f.problems = r.tasks.map((t) => ({ name: t.name, title: t.title || t.name, previousName: contest?.problems.find(p => p.name === t.name)?.name ?? null }));
+        f.problems = r.tasks.map((t) => ({ name: t.name, title: t.title && t.title !== t.name ? t.title : '', previousName: contest?.problems.find(p => p.name === t.name)?.name ?? null }));
         f.lemon.contest = r.name;
         if (!f.name) { f.name = r.name; main.querySelector('input').value = r.name; }
         if (withZip.checked && r.downZip) { lemonDownZip = r.name; pendingDownZip = null; }
@@ -870,14 +919,7 @@ const TASK_STATE = { running: '准备中', queued: '排队中', judging: '评测
 
 async function renderBoard(id) {
   let b = await api('GET', `/api/admin/contests/${id}/board`);
-  let order = { key: 'username', direction: 1 }, anchor = null;
-  const selected = new Set();
-  const selectedSource = () => {
-    if (selected.size !== 1) return null;
-    const [uid, name] = [...selected][0].split('|');
-    const row = b.rows.find(row => String(row.id) === uid), problem = b.contest.problems.find(problem => problem.name === name);
-    return row?.cells[name] && problem ? { row, problem } : null;
-  };
+  let order = { key: 'username', direction: 1 };
   const main = shell('contests');
   const body = h('div');
   main.appendChild(body);
@@ -911,34 +953,14 @@ async function renderBoard(id) {
     // the result on LemonServer: score, or the compile state (NS, CE, …) when compiling failed
     const COMPILE = ['', 'NS', 'CE', 'CTLE', 'IC', 'NG'];
     const rows = CodeHubBoardSort.sort(b.rows, order.key, order.direction);
-    const valid = new Set(rows.flatMap(row => c.problems.map(problem => row.id + '|' + problem.name)));
-    for (const key of selected) if (!valid.has(key)) selected.delete(key);
-    const sortHeader = (label, key, attrs = {}) => h('th', { ...attrs, 'aria-sort': order.key === key ? order.direction > 0 ? 'ascending' : 'descending' : 'none' },
-      h('button', { class: 'table-sort', 'data-sort': key, disabled: key !== 'username' && key !== 'realName' && !scored, onclick: () => {
-        order = { key, direction: order.key === key ? -order.direction : key === 'username' || key === 'realName' ? 1 : -1 }; render();
-      } }, label, order.key === key ? (order.direction > 0 ? ' ↑' : ' ↓') : ''));
-    const paint = () => {
-      table.querySelectorAll('[data-cell]').forEach(cell => { const on = selected.has(cell.dataset.cell); cell.classList.toggle('selected', on); cell.setAttribute('aria-selected', String(on)); });
-      codeButton.disabled = !selectedSource();
-    };
-    const selectCell = (event, row, problem) => {
-      const key = row.id + '|' + problem.name;
-      if (event.shiftKey && anchor) {
-        const a = rows.findIndex(item => item.id === anchor.row), z = rows.indexOf(row);
-        const left = c.problems.findIndex(item => item.name === anchor.problem), right = c.problems.indexOf(problem);
-        if (a >= 0 && left >= 0) {
-          if (!event.ctrlKey && !event.metaKey) selected.clear();
-          for (let i = Math.min(a, z); i <= Math.max(a, z); i++) for (let j = Math.min(left, right); j <= Math.max(left, right); j++) selected.add(rows[i].id + '|' + c.problems[j].name);
-        }
-      } else if (selected.has(key)) selected.delete(key);
-      else { if (!event.ctrlKey && !event.metaKey) selected.clear(); selected.add(key); }
-      anchor = { row: row.id, problem: problem.name }; paint();
-    };
-    const selectRow = (event, row) => {
-      const keys = c.problems.map(problem => row.id + '|' + problem.name), remove = keys.every(key => selected.has(key));
-      if (!remove && !event.ctrlKey && !event.metaKey) selected.clear();
-      for (const key of keys) if (remove) selected.delete(key); else selected.add(key);
-      paint();
+    // Luogu-style indicator: both grey triangles when unsorted, only the up (ascending) or down one when sorted.
+    const sortHeader = (label, key, attrs = {}) => {
+      const disabled = key !== 'username' && key !== 'realName' && !scored;
+      const dir = order.key === key ? (order.direction > 0 ? 'asc' : 'desc') : null;
+      return h('th', { ...attrs, 'aria-sort': dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : 'none' },
+        h('button', { class: 'table-sort', 'data-sort': key, disabled, onclick: () => {
+          order = { key, direction: order.key === key ? -order.direction : key === 'username' || key === 'realName' ? 1 : -1 }; render();
+        } }, label, disabled ? null : h('span', { class: 'sort-icon' + (dir ? ' ' + dir : ''), 'aria-hidden': 'true' }, h('i', { class: 'up' }), h('i', { class: 'down' }))));
     };
     const result = (s, p) => {
       if (s.score === null || s.score === undefined) return null;
@@ -953,19 +975,18 @@ async function renderBoard(id) {
         h('th', { class: 'cell' }, '已提交'),
         h('th', { class: 'cell' }, '提前结束'))),
       h('tbody', null, rows.map((r) => h('tr', { 'data-user': r.username },
-        h('td', { class: 'mono table-selectable', onclick: event => selectRow(event, r) }, r.username), h('td', { class: 'table-selectable', onclick: event => selectRow(event, r) }, r.realName),
+        h('td', { class: 'mono' }, r.username), h('td', null, r.realName),
         c.problems.map((p) => {
           const s = r.cells[p.name];
-          const attrs = { 'data-cell': r.id + '|' + p.name, 'aria-selected': String(selected.has(r.id + '|' + p.name)),
-            onclick: event => selectCell(event, r, p), ondblclick: () => { if (s) adminSource(c, r, p); } };
-          if (!s) return h('td', { ...attrs, class: 'cell muted table-selectable' + (selected.has(r.id + '|' + p.name) ? ' selected' : '') }, '—');
+          const attrs = { 'data-cell': r.id + '|' + p.name };
+          if (!s) return h('td', { ...attrs, class: 'cell muted' }, '—');
           let state = null;
           if (s.synced === false) state = h('span', { class: 'cell-state muted' }, '待上传');
           else if (s.judged === true) state = result(s, p) || h('span', { class: 'cell-state ok-text' }, '已评测');
           else if (s.judged === false) state = h('span', { class: 'cell-state warn-text' }, '未评测');
           return h('td', {
-            ...attrs, class: 'cell has table-selectable' + (selected.has(r.id + '|' + p.name) ? ' selected' : ''),
-            title: `${fmtTime(s.time)} · 第 ${s.count} 次提交 · 双击查看代码`,
+            ...attrs, class: 'cell has clickable', onclick: () => adminSource(c, r, p),
+            title: `${fmtTime(s.time)} · 第 ${s.count} 次提交`,
           }, h('span', { class: 'cell-size' }, fmtSize(s.size)), state);
         }),
         scored ? h('td', { class: 'cell' }, r.total === null ? h('span', { class: 'muted' }, '—') : h('b', null, r.total)) : null,
@@ -973,20 +994,18 @@ async function renderBoard(id) {
         h('td', { class: 'cell' }, r.finishedAt ? [h('span', { title: fmtTime(r.finishedAt) }, fmtTime(r.finishedAt, false).slice(6)),
           h('a', { class: 'undo-link', title: '允许该选手继续提交', onclick: () => undoFinish(r) }, '撤销')] : h('span', { class: 'muted' }, '—'))))));
 
-    const codeButton = h('button', { disabled: !selectedSource(), onclick: () => { const cell = selectedSource(); if (cell) adminSource(c, cell.row, cell.problem); } }, '查看代码');
     put(body,
       h('div', { class: 'page-head' },
         h('h2', null, c.title),
         h('span', { class: 'badge ' + PHASE_BADGE[c.phase] }, PHASE[c.phase]),
         h('span', { class: 'muted' }, fmtRange(c.startTime, c.endTime)),
         h('div', { class: 'right' },
-          codeButton,
           submitted ? h('a', { class: 'btn', href: `/api/admin/contests/${c.id}/archive.zip` }, '下载全部代码') : null,
           h('button', { onclick: () => go(`#/admin/c/${c.id}/edit`) }, '编辑'))),
       lemonCard,
       b.rows.length ? h('div', { class: 'table-wrap' }, table) : h('div', { class: 'card empty' }, '没有可参赛的用户'),
       h('div', { class: 'section-foot' },
-        `${b.rows.length} 名选手 · 提交 ${submitted}` + (scored ? ` · 已评测 ${judged}` : '') + (finished ? ` · 提前结束 ${finished}` : '') + (submitted ? ' · 单击选中／取消 · 双击查看代码' : '')));
+        `${b.rows.length} 名选手 · 提交 ${submitted}` + (scored ? ` · 已评测 ${judged}` : '') + (finished ? ` · 提前结束 ${finished}` : '') + (submitted ? ' · 点击查看代码' : '')));
   };
 
   const reload = async () => {
@@ -1283,7 +1302,7 @@ async function renderSettings(section) {
 
       h('div', { class: 'section-title' }, 'LemonServer'),
       h('div', { class: 'group' }, row('API 地址', lurl), row('网页地址', lpub), row('API Key', lkey)),
-      h('div', { class: 'section-foot' }, 'API Key 在 LemonServer“设置 → 令牌与 API Key”中创建；网页地址只用于“评测结果”链接'),
+      h('div', { class: 'section-foot' }, 'API Key 在 LemonServer“设置 → 令牌与 API Key”中创建；网页地址仅用于结果链接'),
       h('div', { class: 'flex', style: { marginTop: '8px' } }, lstate, h('div', { class: 'grow' }),
         h('button', { class: 'small', onclick: testLemon }, '测试连接'),
         h('button', { class: 'small primary', onclick: saveLemon }, '保存')),
