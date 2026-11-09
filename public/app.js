@@ -685,6 +685,7 @@ async function renderContestForm(id) {
   const problemOf = new WeakMap(); // row element -> problem object, so reordering never depends on indexes
   const renumber = () => plist.querySelectorAll('.prow .idx').forEach((el, i) => { el.textContent = i + 1; });
   const moveProblem = (p, delta) => {
+    if (plist.classList.contains('sorting')) return;
     const i = f.problems.indexOf(p), j = i + delta;
     if (i < 0 || j < 0 || j >= f.problems.length) return;
     f.problems.splice(j, 0, f.problems.splice(i, 1)[0]);
@@ -692,31 +693,60 @@ async function renderContestForm(id) {
     plist.querySelectorAll('.prow .drag-handle')[j]?.focus();
   };
   const startDrag = (event, rowEl) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || plist.classList.contains('sorting')) return;
     event.preventDefault();
-    const handle = event.currentTarget;
-    handle.setPointerCapture(event.pointerId);
+    const handle = event.currentTarget, pointer = event.pointerId, box = rowEl.getBoundingClientRect();
+    const placeholder = h('div', { class: 'prow-placeholder', style: { height: box.height + 'px' } });
+    const previousStyle = rowEl.style.cssText, previousCursor = document.body.style.cursor;
+    let pointerY = event.clientY, finished = false, frame;
+    rowEl.before(placeholder);
     rowEl.classList.add('dragging');
     plist.classList.add('sorting');
-    const onMove = (e) => {
-      // the dragged row goes before the first other row whose middle is below the pointer
-      const others = [...plist.children].filter((el) => el !== rowEl);
-      const next = others.find((el) => { const r = el.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; }) || null;
-      if (rowEl.nextElementSibling === next && (next || plist.lastElementChild === rowEl)) return;
-      plist.insertBefore(rowEl, next);
-      renumber();
+    Object.assign(rowEl.style, { left: box.left + 'px', top: box.top + 'px', width: box.width + 'px' });
+    document.body.style.cursor = 'grabbing';
+    handle.focus({ preventScroll: true });
+    const place = () => {
+      rowEl.style.top = pointerY - (event.clientY - box.top) + 'px';
+      const others = [...plist.children].filter(el => el !== rowEl && el !== placeholder);
+      const next = others.find(el => { const r = el.getBoundingClientRect(); return pointerY < r.top + r.height / 2; }) || null;
+      if (placeholder.nextElementSibling !== next) plist.insertBefore(placeholder, next);
+      [...plist.children].filter(el => el !== rowEl).forEach((el, i) => (el === placeholder ? rowEl : el).querySelector('.idx').textContent = i + 1);
     };
-    const onEnd = () => {
-      handle.removeEventListener('pointermove', onMove);
-      handle.removeEventListener('pointerup', onEnd);
-      handle.removeEventListener('pointercancel', onEnd);
+    const onMove = e => { if (e.pointerId === pointer) { pointerY = e.clientY; place(); } };
+    const onEnd = e => {
+      if (finished || e?.pointerId !== undefined && e.pointerId !== pointer) return;
+      finished = true;
+      cancelAnimationFrame(frame);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onEnd);
+      window.removeEventListener('pointercancel', onEnd);
+      window.removeEventListener('blur', onEnd);
+      window.removeEventListener('keydown', onKey);
+      handle.removeEventListener('lostpointercapture', onEnd);
+      if (handle.hasPointerCapture(pointer)) handle.releasePointerCapture(pointer);
+      if (e?.type === 'pointerup') placeholder.replaceWith(rowEl); else placeholder.remove();
+      rowEl.style.cssText = previousStyle;
       rowEl.classList.remove('dragging');
       plist.classList.remove('sorting');
+      document.body.style.cursor = previousCursor;
+      renumber();
       f.problems = [...plist.children].map((el) => problemOf.get(el));
     };
-    handle.addEventListener('pointermove', onMove);
-    handle.addEventListener('pointerup', onEnd);
-    handle.addEventListener('pointercancel', onEnd);
+    const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); onEnd(); } };
+    const scroll = () => {
+      const dy = pointerY < 48 ? -12 : pointerY > innerHeight - 48 ? 12 : 0;
+      if (dy) { window.scrollBy(0, dy); place(); }
+      frame = requestAnimationFrame(scroll);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onEnd);
+    window.addEventListener('pointercancel', onEnd);
+    window.addEventListener('blur', onEnd);
+    window.addEventListener('keydown', onKey);
+    handle.addEventListener('lostpointercapture', onEnd);
+    // Keep the captured handle in its original DOM position until the drop.
+    handle.setPointerCapture(pointer);
+    frame = requestAnimationFrame(scroll);
   };
   const renderProblems = () => {
     put(plist, ...f.problems.map((p, i) => {

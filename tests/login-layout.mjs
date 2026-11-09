@@ -115,6 +115,41 @@ try {
   await evaluate(`document.querySelector('.login input[type=text]').value='admin';document.querySelector('.login input[type=password]').value='123456';document.querySelector('form.login').requestSubmit()`);
   for (let i = 0; i < 200 && !await evaluate('!!document.querySelector(".user-btn")'); i++) await delay(25);
   assert.equal(await evaluate('document.querySelector("#app").classList.contains("login-page")'), false, 'signed-in pages must not inherit login layout');
+  // Keep the whole row under the pointer and retain capture while crossing multiple rows.
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  const dragId = await evaluate(`(async()=> (await api('POST','/api/admin/contests',{name:'ui-drag',startTime:Date.now()+3600000,endTime:Date.now()+7200000,problems:['one','two','three','four'].map(name=>({name}))})).id)()`);
+  await evaluate(`location.hash='#/admin/c/${dragId}/edit'`);
+  await wait('document.querySelectorAll(".prow").length === 4');
+  const grab = async index => {
+    const pos = await evaluate(`(()=>{document.querySelector('.problem-rows').scrollIntoView({block:'center'});window.draggedRow=document.querySelectorAll('.prow')[${index}];const r=window.draggedRow.getBoundingClientRect(),h=window.draggedRow.querySelector('.drag-handle').getBoundingClientRect();return {x:h.left+h.width/2,y:h.top+h.height/2,top:r.top,height:r.height};})()`);
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: pos.x, y: pos.y, button: 'left', buttons: 1, clickCount: 1 });
+    return pos;
+  };
+  const firstGrab = await grab(0);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: firstGrab.x, y: firstGrab.y + 15, button: 'left', buttons: 1 });
+  assert.ok(Math.abs(await evaluate('window.draggedRow.getBoundingClientRect().top') - firstGrab.top - 15) < 2, 'the entire dragged row must follow the pointer, even before crossing another row');
+  const bottom = await evaluate(`(()=>{const r=document.querySelector('.problem-rows').getBoundingClientRect();return r.bottom-2;})()`);
+  for (let step = 1; step <= 16; step++) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: firstGrab.x, y: firstGrab.y + (bottom - firstGrab.y) * step / 16, button: 'left', buttons: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: firstGrab.x, y: bottom, button: 'left', buttons: 0, clickCount: 1 });
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('.prow')].map(row=>row.querySelector('input').value)`), ['two', 'three', 'four', 'one']);
+  assert.equal(await evaluate(`!!document.querySelector('.sorting,.prow.dragging')`), false, 'finishing a drag must clear its visual state');
+  assert.equal(await evaluate(`getComputedStyle(window.draggedRow).opacity`), '1', 'the row must not stay grey after dropping');
+  const secondGrab = await grab(3), top = await evaluate(`document.querySelector('.problem-rows').getBoundingClientRect().top + 2`);
+  for (let step = 1; step <= 16; step++) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: secondGrab.x, y: secondGrab.y + (top - secondGrab.y) * step / 16, button: 'left', buttons: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: secondGrab.x, y: top, button: 'left', buttons: 0, clickCount: 1 });
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('.prow')].map(row=>row.querySelector('input').value)`), ['one', 'two', 'three', 'four'], 'a second drag must work immediately without an extra click');
+  const canceled = await grab(0);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: canceled.x, y: bottom, button: 'left', buttons: 1 });
+  await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))`);
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: canceled.x, y: bottom, button: 'left', buttons: 0, clickCount: 1 });
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('.prow')].map(row=>row.querySelector('input').value)`), ['one', 'two', 'three', 'four'], 'canceling a drag must restore the original order');
+  assert.equal(await evaluate(`!!document.querySelector('.sorting,.prow.dragging,.prow-placeholder')`), false);
+  await evaluate(`document.querySelector('.page-head button.primary').click()`);
+  await wait(`location.hash === '#/admin/c/${dragId}'`);
+  assert.deepEqual(app.ctx.contest(dragId).problems.map(problem => problem.name), ['one', 'two', 'three', 'four']);
+  await evaluate(`api('DELETE','/api/admin/contests/${dragId}')`);
+  console.log('PASS whole-row dragging, multi-row moves and immediate re-grabbing');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1024, height: 600, deviceScaleFactor: 1, mobile: false });
   const contestId = await evaluate(`(async () => {
     const call=async (url,body)=>{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-CodeHub':'1'},body:JSON.stringify(body)});if(!r.ok)throw new Error('Fixture HTTP '+r.status);return r.json();};
     await call('/api/admin/users/import',{text:'alice,test-password'});

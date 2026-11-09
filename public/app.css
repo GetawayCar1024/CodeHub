@@ -393,11 +393,12 @@ table.list td.cell.clickable { cursor: pointer; }
 /* ---------- admin ---------- */
 .contest-list .row { min-height: 64px; }
 .contest-list .name { font-weight: 600; }
+.problem-rows { display: flex; flex-direction: column; gap: 8px; }
 .problem-rows .prow { display: flex; gap: 8px; align-items: center; }
-.problem-rows .prow + .prow { margin-top: 8px; }
 .problem-rows .prow .idx { width: 22px; color: var(--muted); text-align: right; }
 .problem-rows.sorting { user-select: none; }
-.problem-rows .prow.dragging { opacity: 0.6; }
+.problem-rows .prow.dragging { position: fixed; z-index: 50; pointer-events: none; background: var(--card); border-radius: 8px; box-shadow: 0 5px 18px rgba(0,0,0,.18); }
+.prow-placeholder { flex: none; border: 1px dashed var(--sep); border-radius: 8px; background: var(--fill); }
 .drag-handle { width: 20px; height: 32px; padding: 0; flex: none; background: transparent; color: var(--muted); cursor: grab; touch-action: none; }
 .drag-handle:hover { background: var(--fill); color: var(--text2); }
 .problem-rows.sorting .drag-handle { cursor: grabbing; }
