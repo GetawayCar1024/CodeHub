@@ -5,20 +5,8 @@ import { fail, readJson, sendFile } from './http.js';
 import { checkPassword, hashPassword } from './util.js';
 import { VERSION } from './version.js';
 import { contestMaterials } from './contest-materials.js';
-
-const MIN = 60000;
-
-export function contestPhase(c, now = Date.now()) {
-  if (now < c.startTime - (c.earlyMinutes ?? 30) * MIN) return 'upcoming';
-  if (now < c.startTime) return 'before';
-  if (now < c.endTime) return 'running';
-  return 'ended';
-}
-
-export function allowedFor(c, user) {
-  if (!c.groups || !c.groups.length) return true;
-  return (user.groups || []).some((g) => c.groups.includes(g));
-}
+import { allowedFor, contestPhase, contestantEnd, extraMinutes } from './contest-time.js';
+export { allowedFor, contestPhase } from './contest-time.js';
 
 // Running and future contests first (earliest start first), then ended ones (latest start first).
 export function sortContests(list, now = Date.now()) {
@@ -63,13 +51,13 @@ export function setupUserRoutes(router, ctx) {
     return req.user;
   };
 
-  // Contests a contestant can open right now: allowed group, from the early-entry time to the end.
+  // Once open, an allowed contest remains readable after its individual deadline.
   const openContest = (req, id) => {
     const user = needUser(req);
     const c = ctx.contest(id);
     if (!c || !allowedFor(c, user)) fail(404, '比赛不存在');
-    const phase = contestPhase(c);
-    if (phase === 'upcoming' || phase === 'ended') fail(404, phase === 'ended' ? '比赛已结束' : '比赛尚未开放');
+    const phase = contestPhase(c, Date.now(), user.id);
+    if (phase === 'upcoming') fail(404, '比赛尚未开放');
     return { c, user, phase };
   };
 
@@ -113,15 +101,15 @@ export function setupUserRoutes(router, ctx) {
     const user = needUser(req);
     const now = Date.now();
     const open = data.contests.filter((c) => {
-      const phase = contestPhase(c, now);
-      return allowedFor(c, user) && (phase === 'before' || phase === 'running');
+      const phase = contestPhase(c, now, user.id);
+      return allowedFor(c, user) && phase !== 'upcoming';
     });
-    const { items, ...pageInfo } = paginate(req, sortContests(open, now));
+    const { items, ...pageInfo } = paginate(req, sortContests(open.map(c => ({ ...c, endTime: contestantEnd(c, user.id) })), now));
     const contests = items.map((c) => ({ id: c.id, title: c.title, startTime: c.startTime, endTime: c.endTime, phase: contestPhase(c, now), problems: c.problems.length }));
     return { serverTime: now, ...pageInfo, contests };
   });
 
-  router.get('/api/contests/:id', (req, res, p) => {
+  router.get('/api/contests/:id', async (req, res, p) => {
     const { c, user, phase } = openContest(req, p.id);
     const subs = data.submissions[c.id]?.[user.id] || {};
     const serverTime = Date.now();
@@ -130,7 +118,10 @@ export function setupUserRoutes(router, ctx) {
       id: c.id,
       title: c.title,
       startTime: c.startTime,
-      endTime: c.endTime,
+      endTime: contestantEnd(c, user.id),
+      originalEndTime: c.endTime,
+      extraMinutes: extraMinutes(c, user.id),
+      lemonResultsLink: phase === 'ended' ? await ctx.lemon.publicResultsLink(c) : null,
       phase,
       serverTime,
       ...materials,

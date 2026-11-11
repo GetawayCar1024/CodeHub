@@ -8,6 +8,7 @@ import { createZip } from './zip.js';
 import { normalizeUrl } from './lemon.js';
 import { commitContestEdit } from './contest-edit.js';
 import { materialTiming } from './contest-materials.js';
+import { contestantEnd, extraMinutes, lastEnd } from './contest-time.js';
 
 const MAX_UPLOAD = 1024 * 1024 * 1024;
 const collator = new Intl.Collator('zh-CN', { numeric: true });
@@ -336,6 +337,7 @@ export function setupAdminRoutes(router, ctx) {
     title: c.title,
     startTime: c.startTime,
     endTime: c.endTime,
+    lastEndTime: lastEnd(c, data.users),
     earlyMinutes: c.earlyMinutes,
     ...materialTiming(c),
     problems: c.problems,
@@ -557,7 +559,9 @@ export function setupAdminRoutes(router, ctx) {
           compileState: judged ? t.compileState ?? 0 : null,
         };
       }
-      return { id: u.id, username: u.username, realName: u.realName, cells, total, finishedAt: data.finished[c.id]?.[u.id] ?? null };
+      return { id: u.id, username: u.username, realName: u.realName, cells, total, finishedAt: data.finished[c.id]?.[u.id] ?? null,
+        extraMinutes: extraMinutes(c, u.id), endTime: contestantEnd(c, u.id),
+        canExtend: allowedFor(c, u) && !data.finished[c.id]?.[u.id] && Date.now() < contestantEnd(c, u.id) };
     });
     return {
       contest: contestJson(c),
@@ -570,6 +574,27 @@ export function setupAdminRoutes(router, ctx) {
   });
 
   // Undo a contestant's early finish (e.g. a click by mistake): they can submit again.
+  route('PUT', '/api/admin/contests/:id/extensions/:uid', async (req, res, p) => {
+    const c = getContest(p.id), user = getUser(p.uid), body = await readJson(req);
+    if (user.role === 'admin' || !allowedFor(c, user)) fail(400, '请选择可参加该比赛的选手');
+    if (!Number.isInteger(body.minutes) || body.minutes < 1 || body.minutes > 10080) fail(400, '累计延时须为 1–10080 的整数分钟');
+    if (data.finished[c.id]?.[user.id] || Date.now() >= contestantEnd(c, user.id)) fail(409, '该选手已结束比赛，不能再延时');
+    if (body.minutes < extraMinutes(c, user.id)) fail(400, '累计延时不能少于已有延时');
+    if (body.minutes === extraMinutes(c, user.id)) return { minutes: body.minutes, endTime: contestantEnd(c, user.id) };
+    const previous = c.extraMinutes, oldState = data.lemonState[c.id] ? structuredClone(data.lemonState[c.id]) : undefined;
+    c.extraMinutes = { ...(previous || {}) };
+    c.extraMinutes[user.id] = body.minutes;
+    ctx.lemon.timesChanged(c);
+    try { ctx.store.flush(); }
+    catch (error) {
+      if (previous === undefined) delete c.extraMinutes; else c.extraMinutes = previous;
+      if (oldState === undefined) delete data.lemonState[c.id]; else data.lemonState[c.id] = oldState;
+      throw error;
+    }
+    ctx.log('contest extra time:', c.name, user.username, body.minutes, 'minutes');
+    return { minutes: extraMinutes(c, user.id), endTime: contestantEnd(c, user.id) };
+  });
+
   route('DELETE', '/api/admin/contests/:id/finished/:uid', (req, res, p) => {
     const c = getContest(p.id);
     const u = getUser(p.uid);

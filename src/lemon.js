@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { lastEnd } from './contest-time.js';
 
 export class LemonError extends Error {
   constructor(status, message, body) {
@@ -180,7 +181,7 @@ export class LemonLink {
 
   // The contest ends later than before: the run after the contest is due again.
   timesChanged(c) {
-    if (c.endTime > Date.now()) this.state(c).finalDone = false;
+    if (lastEnd(c, this.ctx.data.users) > Date.now()) this.state(c).finalDone = false;
   }
 
   async ensureTasks(c) {
@@ -212,13 +213,19 @@ export class LemonLink {
     return rt.remote;
   }
 
+  async publicResultsLink(c) {
+    if (!this.linked(c)) return null;
+    const remote = await this.remote(c);
+    return remote?.public === true ? this.client.resultsLink(c.lemon.contest) : null;
+  }
+
   // ---- judging ----
 
   kick(c) {
     const rt = this.rt(c);
     if (rt.busy || !rt.pending) return;
     const now = Date.now();
-    if (now < c.startTime || now >= c.endTime) return;
+    if (now < c.startTime || now >= lastEnd(c, this.ctx.data.users)) return;
     rt.pending = false;
     this.runTask(c, 'submit');
   }
@@ -308,7 +315,8 @@ export class LemonLink {
       }
 
       const iv = c.lemon.interval;
-      if (now >= c.startTime && now < c.endTime) {
+      const latest = lastEnd(c, this.ctx.data.users);
+      if (now >= c.startTime && now < latest) {
         if (iv > 0) {
           const base = this.periodBase(c);
           if (st.slotBase !== base || st.slotInterval !== iv) {
@@ -326,11 +334,11 @@ export class LemonLink {
         } else if (iv === 0) {
           this.kick(c);
         }
-      } else if (now >= c.endTime && !st.finalDone && !rt.busy && now - (rt.finalTriedAt || 0) > 10000) {
-        // after the contest: once the last task has finished (rt.busy is false), judge what is still unjudged
+      } else if (now >= latest && !st.finalDone && !rt.busy && now - (rt.finalTriedAt || 0) > 10000) {
+        // Preserve the judging policy; the contest ends with its last extended participant.
         rt.finalTriedAt = now;
-        this.runTask(c, 'final').then((r) => {
-          if (r === 'done') {
+        this.runTask(c, 'final').then(result => {
+          if (result === 'done') {
             st.finalDone = true;
             this.ctx.store.save();
           }

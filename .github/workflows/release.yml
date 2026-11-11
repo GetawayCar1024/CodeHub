@@ -32,6 +32,9 @@ jobs:
       - name: Result sorting regression
         run: node --test tests/board-sort.mjs
 
+      - name: Individual deadlines and history
+        run: node --test tests/extensions.mjs
+
       - name: Login layout regression
         run: node tests/login-layout.mjs
 
@@ -78,6 +81,9 @@ jobs:
 
       - name: Result sorting regression
         run: node --test tests/board-sort.mjs
+
+      - name: Individual deadlines and history
+        run: node --test tests/extensions.mjs
 
       - name: Login layout regression
         run: node tests/login-layout.mjs

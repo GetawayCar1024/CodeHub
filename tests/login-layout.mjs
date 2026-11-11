@@ -238,6 +238,19 @@ try {
   await evaluate('route()');
   console.log('PASS board score/name ordering, sort indicators and click-to-view');
 
+  await wait(`!!document.querySelector('[data-extend="${user.id}"]')`);
+  let accumulated = 0;
+  for (const minutes of [5, 10]) {
+    await evaluate(`document.querySelector('[data-extend="${user.id}"]').click()`);
+    await wait(`!!document.querySelector('.overlay input[aria-label="本次延时分钟数"]')`);
+    await evaluate(`document.querySelector('.overlay input[aria-label="本次延时分钟数"]').value=${minutes};[...document.querySelectorAll('.overlay button')].find(button=>button.textContent==='保存延时').click()`);
+    await wait('!document.querySelector(".overlay")');
+    accumulated += minutes;
+    assert.equal(contest.extraMinutes[user.id] || 0, accumulated);
+  }
+  delete contest.extraMinutes[user.id];
+  console.log('PASS per-contestant extra-time controls');
+
   await evaluate(`adminSource({id:${contestId}},{id:${user.id},username:'alice'},{name:'new-alpha'})`);
   await copyFromViewer('modern');
   await copyFromViewer('denied');
@@ -346,6 +359,20 @@ try {
   contest.downZip = null; contest.downZipPassword = '';
   await wait(`document.querySelector('[data-material=downzip]').textContent === '未设置 down.zip' && document.querySelector('[data-material=password]').textContent === '未设置密码'`);
   console.log('PASS separate pending/unset messages and automatic pre-start release');
+  contest.startTime = Date.now() - 3600000; contest.endTime = Date.now() - 1000;
+  contest.downZipPassword = 'history-password';
+  app.ctx.lemon.publicResultsLink = async () => 'https://results.example/#/contest/public/results';
+  await evaluate(`[...document.querySelectorAll('button')].find(button=>button.textContent==='刷新页面').click()`);
+  await wait(`document.querySelector('.countdown .lbl').textContent==='已结束'`);
+  assert.ok(await evaluate(`[...document.querySelectorAll('.problem .actions .primary')].every(button=>button.disabled)`));
+  assert.equal(await evaluate(`document.querySelector('[data-material=password]').textContent`), 'history-password');
+  assert.ok(await evaluate(`[...document.querySelectorAll('a')].some(a=>a.textContent==='查看 LemonServer 结果'&&a.href.startsWith('https://results.example/'))`));
+  assert.ok(await evaluate(`[...document.querySelectorAll('.problem button')].some(button=>button.textContent==='查看代码'&&!button.disabled)`));
+  contest.extraMinutes[user.id] = 15;
+  await evaluate(`[...document.querySelectorAll('button')].find(button=>button.textContent==='刷新页面').click()`);
+  await wait(`document.querySelector('.countdown .lbl').textContent==='距离结束'`);
+  assert.ok(await evaluate(`document.body.textContent.includes('已增加 15 分钟')`));
+  console.log('PASS read-only history, public results link and extended contestant countdown');
 } finally {
   if (send) await Promise.race([send('Browser.close').catch(() => {}), delay(500)]);
   socket?.close(); browser.kill(); app.stop();

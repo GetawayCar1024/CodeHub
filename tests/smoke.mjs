@@ -74,7 +74,7 @@ async function waitFor(what, fn, timeout = 60000) {
 try {
   const admin = client();
   const st = await admin('GET', '/api/status');
-  assert.equal(st.version, '0.1.10');
+  assert.equal(st.version, '0.1.11');
   assert.equal(st.user, null);
 
   step('admin login, CSRF header');
@@ -298,7 +298,8 @@ try {
   }
 
   step('after the contest');
-  assert.equal((await u1('GET', '/api/contests')).contests.length, 0);
+  assert.deepEqual((await u1('GET', '/api/contests')).contests.map(c => [c.id, c.phase]), [[A.id, 'ended']]);
+  assert.equal((await u1('GET', `/api/contests/${A.id}`)).password, '456');
   {
     const ended = app.ctx.contest(A.id);
     await admin('PUT', '/api/admin/contests/' + A.id, { endTime: ended.endTime + 60000 }, { expect: 409 });
@@ -307,7 +308,7 @@ try {
     await admin('PUT', '/api/admin/contests/' + A.id, { earlyMinutes: ended.earlyMinutes });
     await admin('PUT', '/api/admin/contests/' + A.id, { startTime: ended.startTime, endTime: ended.endTime });
   }
-  await u1('POST', `/api/contests/${A.id}/submit`, { problem: 'aplusb', code: AC }, { expect: 404 });
+  await u1('POST', `/api/contests/${A.id}/submit`, { problem: 'aplusb', code: AC }, { expect: 403 });
   const s = await admin('GET', `/api/admin/contests/${A.id}/source/${byName['SC-00001'].id}/aplusb`);
   assert.equal(s.code, LEMON ? WA : AC);
   const zip = await admin('GET', `/api/admin/contests/${A.id}/archive.zip`);
@@ -365,10 +366,12 @@ try {
   assert.deepEqual(live.map((c) => c.startTime), live.map((c) => c.startTime).sort((a, b) => a - b));
   assert.deepEqual(done.map((c) => c.startTime), done.map((c) => c.startTime).sort((a, b) => b - a));
   assert.equal((await admin('GET', '/api/admin/contests?page=99')).page, 2);
-  // contestants only see what they can enter, in the same order, paginated as well
+  // Upcoming contests stay hidden; allowed past contests remain readable at the end of the list.
   const ul = await u3('GET', '/api/contests?pageSize=2');
   const enterable = live.filter((c) => c.startTime - 30 * 60000 <= t);
-  assert.equal(ul.total, enterable.length);
+  const myGroups = (await u3('GET', '/api/status')).user.groups;
+  const history = done.filter(c => !c.groups.length || c.groups.some(group => myGroups.includes(group)));
+  assert.equal(ul.total, enterable.length + history.length);
   assert.deepEqual(ul.contests.map((c) => c.id), enterable.slice(0, 2).map((c) => c.id));
   assert.equal((await u3('GET', '/api/contests?pageSize=2&page=2')).contests[0].id, enterable[2].id);
 

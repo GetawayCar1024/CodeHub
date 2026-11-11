@@ -486,7 +486,8 @@ async function renderContest(id) {
             h('li', null, h('span', { class: 'k' }, '姓名'), c.user.realName),
             h('li', null, h('span', { class: 'k' }, '账号'), c.user.username),
             c.user.groups.length ? h('li', null, h('span', { class: 'k' }, '分组'), c.user.groups.join('、')) : null,
-            h('li', null, h('span', { class: 'k' }, '时间'), fmtRange(c.startTime, c.endTime))),
+            h('li', null, h('span', { class: 'k' }, '时间'), fmtRange(c.startTime, c.endTime)),
+            c.extraMinutes ? h('li', null, h('span', { class: 'k' }, '延时'), `已增加 ${c.extraMinutes} 分钟`) : null),
           h('div', { class: 'flex', style: { marginTop: '12px' } },
             h('button', { onclick: () => refresh(true) }, '刷新页面'),
             running && !c.finishedAt ? h('button', { class: 'danger', onclick: finishEarly }, '提前结束比赛') : null),
@@ -501,7 +502,8 @@ async function renderContest(id) {
               : h('span', { class: 'muted' }, c.passwordState === 'pending' ? `待公布（${fmtTime(c.passwordReleaseAt, false)}）` : '未设置密码'))),
           step(3, '编写代码，提交到系统'),
           step(4, '查看已提交的代码，确认无误'),
-          h('li', { class: 'note' }, '输入输出请严格按试题册要求编写。'))));
+          h('li', { class: 'note' }, '输入输出请严格按试题册要求编写。'),
+          c.lemonResultsLink ? h('li', null, h('a', { href: c.lemonResultsLink, target: '_blank', rel: 'noopener noreferrer' }, '查看 LemonServer 结果')) : null)));
     tick();
   };
 
@@ -1003,7 +1005,7 @@ async function renderBoard(id) {
         c.problems.map((p) => sortHeader(p.title !== p.name ? `${p.title} (${p.name})` : p.name, 'problem:' + p.name, { class: 'cell' })),
         scored ? sortHeader('总分', 'total', { class: 'cell' }) : null,
         h('th', { class: 'cell' }, '已提交'),
-        h('th', { class: 'cell' }, '提前结束'))),
+        h('th', { class: 'cell' }, '提前结束'), h('th', { class: 'cell' }, '延时'))),
       h('tbody', null, rows.map((r) => h('tr', { 'data-user': r.username },
         h('td', { class: 'mono' }, r.username), h('td', null, r.realName),
         c.problems.map((p) => {
@@ -1022,7 +1024,9 @@ async function renderBoard(id) {
         scored ? h('td', { class: 'cell' }, r.total === null ? h('span', { class: 'muted' }, '—') : h('b', null, r.total)) : null,
         h('td', { class: 'cell muted' }, `${Object.keys(r.cells).length} / ${c.problems.length}`),
         h('td', { class: 'cell' }, r.finishedAt ? [h('span', { title: fmtTime(r.finishedAt) }, fmtTime(r.finishedAt, false).slice(6)),
-          h('a', { class: 'undo-link', title: '允许该选手继续提交', onclick: () => undoFinish(r) }, '撤销')] : h('span', { class: 'muted' }, '—'))))));
+          h('a', { class: 'undo-link', title: '允许该选手继续提交', onclick: () => undoFinish(r) }, '撤销')] : h('span', { class: 'muted' }, '—')),
+        h('td', { class: 'cell' }, h('button', { class: 'small', 'data-extend': r.id, disabled: r.canExtend === false, onclick: () => extendUser(r) }, r.extraMinutes ? `+${r.extraMinutes} 分钟` : '延时'),
+          r.extraMinutes ? h('div', { class: 'muted small', title: fmtTime(r.endTime) }, fmtTime(r.endTime, false)) : null)))));
 
     put(body,
       h('div', { class: 'page-head' },
@@ -1054,6 +1058,20 @@ async function renderBoard(id) {
       toast('已撤销');
       reload();
     } catch (e) { fail(e); }
+  };
+
+  const extendUser = (r) => {
+    const minutes = h('input', { type: 'number', min: 1, max: 10080 - (r.extraMinutes || 0), step: 1, value: 5, 'aria-label': '本次延时分钟数' });
+    modal(`为 ${r.username} 延时`, h('div', { class: 'stack' },
+      h('label', null, '本次增加的分钟数', minutes),
+      h('div', { class: 'muted small' }, `当前结束：${fmtTime(r.endTime)}；已累计延时 ${r.extraMinutes || 0} 分钟。`)), [
+      { label: '取消' }, { label: '保存延时', primary: true, onClick: async () => {
+        const value = Number(minutes.value);
+        if (!Number.isInteger(value) || value < 1 || value + (r.extraMinutes || 0) > 10080) { toast('请输入正整数分钟，累计最多 10080 分钟', true); return false; }
+        await api('PUT', `/api/admin/contests/${id}/extensions/${r.id}`, { minutes: value + (r.extraMinutes || 0) });
+        await reload();
+      } },
+    ]);
   };
 
   const act = async (what) => {
