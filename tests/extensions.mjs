@@ -31,6 +31,7 @@ async function fixture(t, run) {
     const group = app.ctx.data.groups.find(group => group.name === 'allowed');
     const created = await admin('POST', '/api/admin/contests', { name: 'extra-time', startTime: start, endTime: end, earlyMinutes: 10, passwordReleaseMinutes: 0, downZipReleaseMinutes: 0, problems: [{ name: 'sum' }], groups: [group.id] });
     const c = app.ctx.contest(created.id), uid = app.ctx.data.users.find(user => user.username === 'alice').id;
+    await alice('POST', `/api/contests/${c.id}/join`, { confirm: true, strict: true });
     await run({ app, home, admin, alice, bob, outsider, c, uid, start, end, clock: value => { now = value; }, base: `/api/admin/contests/${c.id}`, publicBase: `/api/contests/${c.id}` });
   } finally { app.stop(); app.server.closeAllConnections(); await new Promise(resolve => app.server.close(resolve)); fs.rmSync(home, { recursive: true, force: true }); }
 }

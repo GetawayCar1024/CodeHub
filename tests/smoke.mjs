@@ -74,7 +74,7 @@ async function waitFor(what, fn, timeout = 60000) {
 try {
   const admin = client();
   const st = await admin('GET', '/api/status');
-  assert.equal(st.version, '0.1.11');
+  assert.equal(st.version, '0.1.12');
   assert.equal(st.user, null);
 
   step('admin login, CSRF header');
@@ -165,6 +165,9 @@ try {
   await u3('GET', '/api/contests/' + A.id, undefined, { expect: 404 });
   await u1('GET', '/api/contests/' + B.id, undefined, { expect: 404 });
   let cd = await u1('GET', '/api/contests/' + A.id);
+  assert.equal(cd.requiresConfirmation, true);
+  await u1('POST', `/api/contests/${A.id}/join`, { confirm: true, strict: true });
+  cd = await u1('GET', '/api/contests/' + A.id);
   assert.equal(cd.password, null);
   assert.equal((await u1('GET', `/api/contests/${A.id}/down.zip`)).toString(), 'PK-test');
   await u1('POST', `/api/contests/${A.id}/submit`, { problem: 'aplusb', code: 'int main(){}' }, { expect: 403 });
@@ -193,9 +196,12 @@ try {
   assert.equal(r1.submission.count, 2);
   assert.equal(r1.submission.size, Buffer.byteLength(AC));
   assert.equal((await u1('GET', `/api/contests/${A.id}/source/aplusb`)).code, AC);
+  await u2('POST', `/api/contests/${A.id}/join`, { confirm: true, strict: true });
   await u2('POST', `/api/contests/${A.id}/submit`, { problem: 'aplusb', code: WA });
   assert.equal(fs.readFileSync(path.join(dataDir, 'submissions', '测试赛', 'SC-00001', 'aplusb.cpp'), 'utf8'), AC);
-  await admin('PUT', '/api/admin/contests/' + A.id, { subFolder: true }, { expect: 409 });
+  await admin('PUT', '/api/admin/contests/' + A.id, { subFolder: true });
+  assert.equal(fs.readFileSync(path.join(dataDir, 'submissions', '测试赛', 'SC-00001', 'aplusb', 'aplusb.cpp'), 'utf8'), AC);
+  await admin('PUT', '/api/admin/contests/' + A.id, { subFolder: false });
   // the admin sees the code during the contest as well
   assert.equal((await admin('GET', `/api/admin/contests/${A.id}/source/${byName['SC-00001'].id}/aplusb`)).code, AC);
   assert.equal((await admin('GET', `/api/admin/contests/${A.id}/archive.zip`)).readUInt32LE(0), 0x04034b50);
@@ -375,6 +381,17 @@ try {
   assert.deepEqual(ul.contests.map((c) => c.id), enterable.slice(0, 2).map((c) => c.id));
   assert.equal((await u3('GET', '/api/contests?pageSize=2&page=2')).contests[0].id, enterable[2].id);
 
+  if (LEMON) {
+    step('confirmed participants without code get local and LemonServer folders');
+    const name = 'EmptyParticipant' + Date.now();
+    await lemon('POST', '/api/contests', { json: { name }, token: lemonKey, expect: 201 });
+    const empty = await admin('POST', '/api/admin/contests', { name, startTime: Date.now() + 60000, endTime: Date.now() + 3600000,
+      problems: [{ name: 'a' }], lemon: { contest: name, interval: null } });
+    await u2('POST', `/api/contests/${empty.id}/join`, { confirm: true, strict: true });
+    await waitFor('empty participant directory', () => fs.existsSync(path.join(LEMON_ROOT, name, 'source', 'SC-00002')));
+    assert.deepEqual(fs.readdirSync(path.join(LEMON_ROOT, name, 'source', 'SC-00002')), []);
+    assert.deepEqual(fs.readdirSync(path.join(dataDir, 'submissions', name, 'SC-00002')), []);
+  }
   console.log('ALL OK');
 } finally {
   app.stop();

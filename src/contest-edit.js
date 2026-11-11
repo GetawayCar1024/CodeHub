@@ -46,40 +46,48 @@ function sameEntry(a, b) {
 export function commitContestEdit(ctx, contest, next, rows) {
   const renames = problemRenames(contest, next, rows);
   const folderChanged = contest.name !== next.name;
+  const layoutChanged = !!contest.subFolder !== !!next.subFolder;
+  const filesChanged = renames.size || layoutChanged;
   const rt = ctx.lemon.rt(contest);
-  if ((renames.size || folderChanged) && (rt.busy || rt.uploads))
+  if ((filesChanged || folderChanged) && (rt.busy || rt.uploads || rt.tasksUpdating))
     fail(409, '正在同步或评测，请完成后再修改文件名');
 
   const data = ctx.data, id = contest.id;
   const oldContest = { ...contest }, oldSubmissions = data.submissions[id];
   const oldPending = data.lemonPending[id], oldState = data.lemonState[id];
   const submissions = renames.size && oldSubmissions ? { ...oldSubmissions } : oldSubmissions;
-  const pending = renames.size && oldPending ? {} : null;
+  const pending = filesChanged ? {} : null;
   const moves = [];
-  for (const [uid, problems] of Object.entries(renames.size ? oldSubmissions || {} : {})) {
-    for (const [from, to] of renames) {
+  for (const [uid, problems] of Object.entries(filesChanged ? oldSubmissions || {} : {})) {
+    const changes = layoutChanged ? Object.keys(problems).map(from => [from, renames.get(from) || from]) : renames;
+    for (const [from, to] of changes) {
       if (!Object.hasOwn(problems, from)) continue;
-      if (Object.keys(problems).some(name => name.toLowerCase() === to.toLowerCase() && !renames.has(name)))
+      if (Object.keys(problems).some(name => name !== from && name.toLowerCase() === to.toLowerCase() && !renames.has(name)))
         fail(409, `目标题目“${to}”已有提交，未覆盖任何文件`);
       const user = ctx.user(uid);
       if (!user) fail(409, '提交对应的用户不存在，未修改文件');
+      const userDirectory = entry(path.join(ctx.contestDir(contest), user.username));
+      if (!userDirectory?.isDirectory() || userDirectory.isSymbolicLink()) fail(409, '提交目录不是普通文件夹');
       const file = ctx.submissionFile(contest, user.username, from);
-      const target = ctx.submissionFile(contest, user.username, to);
+      const target = ctx.submissionFile({ ...contest, subFolder: next.subFolder }, user.username, to);
       const fileEntry = entry(file);
       if (!fileEntry?.isFile() || fileEntry.isSymbolicLink())
         fail(409, `找不到可改名的提交：${user.username}/${from}.cpp`);
-      const source = contest.subFolder ? path.dirname(file) : file;
-      const destination = contest.subFolder ? path.dirname(target) : target;
+      const source = contest.subFolder && !layoutChanged ? path.dirname(file) : file;
+      const destination = next.subFolder && !layoutChanged ? path.dirname(target) : target;
       if (entry(path.dirname(source))?.isSymbolicLink() || entry(source)?.isSymbolicLink())
         fail(409, '提交目录包含链接，未修改文件');
-      if (contest.subFolder) {
+      if (contest.subFolder && !layoutChanged) {
         const innerTarget = path.join(source, to + '.cpp');
         if (entry(innerTarget) && !sameEntry(innerTarget, file))
           fail(409, `目标文件已存在：${user.username}/${to}.cpp`);
       }
-      moves.push({ source, destination, from, to, temporary: path.join(path.dirname(source), '.codehub-rename-' + randomUUID()) });
+      const parent = path.dirname(destination), parentEntry = entry(parent);
+      if (parentEntry && (!parentEntry.isDirectory() || parentEntry.isSymbolicLink())) fail(409, '目标提交目录不是普通文件夹');
+      moves.push({ source, destination, from, to, temporary: path.join(ctx.contestDir(contest), user.username, '.codehub-rename-' + randomUUID()),
+        oldDirectory: layoutChanged && contest.subFolder ? path.dirname(file) : null });
     }
-    submissions[uid] = Object.fromEntries(Object.entries(problems).map(([name, value]) => [renames.get(name) || name, value]));
+    if (renames.size) submissions[uid] = Object.fromEntries(Object.entries(problems).map(([name, value]) => [renames.get(name) || name, value]));
   }
   const sources = new Set(moves.map(move => fs.realpathSync.native(move.source)));
   for (const move of moves) {
@@ -93,7 +101,7 @@ export function commitContestEdit(ctx, contest, next, rows) {
   }
 
   if (pending) {
-    for (const [key, value] of Object.entries(oldPending)) {
+    for (const [key, value] of Object.entries(oldPending || {})) {
       const [uid, name] = key.split('|');
       pending[uid + '|' + (renames.get(name) || name)] = value;
     }
@@ -101,8 +109,8 @@ export function commitContestEdit(ctx, contest, next, rows) {
   const nextPending = pending || {};
   if (ctx.lemon.linked(next)) {
     for (const [uid, problems] of Object.entries(oldSubmissions || {}))
-      for (const [from, to] of renames)
-        if (Object.hasOwn(problems, from)) nextPending[uid + '|' + to] = Date.now() + Math.random();
+      for (const from of Object.keys(problems))
+        if (layoutChanged || renames.has(from)) nextPending[uid + '|' + (renames.get(from) || from)] = Date.now() + Math.random();
   }
 
   const undo = [];
@@ -110,10 +118,14 @@ export function commitContestEdit(ctx, contest, next, rows) {
   try {
     for (const item of moves) {
       move(item.source, item.temporary);
-      if (contest.subFolder) move(path.join(item.temporary, item.from + '.cpp'), path.join(item.temporary, item.to + '.cpp'));
+      if (contest.subFolder && !layoutChanged) move(path.join(item.temporary, item.from + '.cpp'), path.join(item.temporary, item.to + '.cpp'));
     }
     for (const item of moves) {
       if (entry(item.destination)) fail(409, '目标位置已出现文件，已取消改名');
+      if (!entry(path.dirname(item.destination))) {
+        fs.mkdirSync(path.dirname(item.destination));
+        undo.push(() => fs.rmdirSync(path.dirname(item.destination)));
+      }
       move(item.temporary, item.destination);
     }
     if (folderChanged && entry(fromFolder)) {
@@ -124,8 +136,8 @@ export function commitContestEdit(ctx, contest, next, rows) {
     }
     Object.assign(contest, next);
     if (submissions) data.submissions[id] = submissions;
-    if (renames.size && (oldPending || ctx.lemon.linked(contest))) data.lemonPending[id] = nextPending;
-    if (ctx.lemon.linked(contest) && renames.size) data.lemonState[id] = { ...ctx.lemon.state(contest), finalDone: false };
+    if (filesChanged && (oldPending || ctx.lemon.linked(contest))) data.lemonPending[id] = nextPending;
+    if (ctx.lemon.linked(contest) && filesChanged) data.lemonState[id] = { ...ctx.lemon.state(contest), finalDone: false };
     ctx.store.flush();
   } catch (error) {
     Object.assign(contest, oldContest);
@@ -141,6 +153,10 @@ export function commitContestEdit(ctx, contest, next, rows) {
     }
     if (rollbackFailed) fail(500, '改名回滚失败，请保留 .codehub-rename-* 文件并检查服务器日志');
     throw error;
+  }
+  for (const item of moves) if (item.oldDirectory) {
+    const dir = folderChanged ? path.join(toFolder, path.relative(fromFolder, item.oldDirectory)) : item.oldDirectory;
+    try { fs.rmdirSync(dir); } catch { /* keep directories containing unrelated files */ }
   }
   return renames;
 }

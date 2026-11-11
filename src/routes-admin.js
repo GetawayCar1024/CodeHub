@@ -9,6 +9,8 @@ import { normalizeUrl } from './lemon.js';
 import { commitContestEdit } from './contest-edit.js';
 import { materialTiming } from './contest-materials.js';
 import { contestantEnd, extraMinutes, lastEnd } from './contest-time.js';
+import { joinedAt } from './participation.js';
+import { exportUsers } from './user-export.js';
 
 const MAX_UPLOAD = 1024 * 1024 * 1024;
 const collator = new Intl.Collator('zh-CN', { numeric: true });
@@ -322,11 +324,12 @@ export function setupAdminRoutes(router, ctx) {
   });
 
   route('GET', '/api/admin/users/export.csv', (req, res) => {
-    const gname = (id) => data.groups.find((g) => g.id === id)?.name;
-    const lines = ['用户名,真实姓名,分组'];
-    for (const u of data.users) if (u.role !== 'admin')
-      lines.push([u.username, u.realName, (u.groups || []).map(gname).filter(Boolean).join(';')].join(','));
-    sendBuffer(res, Buffer.from('\uFEFF' + lines.join('\r\n'), 'utf8'), { name: 'users.csv', mime: 'text/csv; charset=utf-8' });
+    const result = exportUsers(data, req.query);
+    sendBuffer(res, Buffer.from(result.body, 'utf8'), result);
+  });
+  route('GET', '/api/admin/users/export', (req, res) => {
+    const result = exportUsers(data, req.query);
+    sendBuffer(res, Buffer.from(result.body, 'utf8'), result);
   });
 
   // ------------------------------------------------------------------ contests
@@ -343,6 +346,7 @@ export function setupAdminRoutes(router, ctx) {
     problems: c.problems,
     groups: c.groups,
     subFolder: !!c.subFolder,
+    strict: c.strict !== false,
     downZip: c.downZip,
     downZipPassword: c.downZipPassword || '',
     lemon: c.lemon,
@@ -411,7 +415,10 @@ export function setupAdminRoutes(router, ctx) {
     if (isNew || 'groups' in body) next.groups = groupIds(body.groups || []);
     if (isNew || 'subFolder' in body) {
       next.subFolder = !!body.subFolder;
-      if (!isNew && next.subFolder !== !!c.subFolder && hasSubmissions(c)) fail(409, '已有提交，不能修改子文件夹设置');
+    }
+    if (isNew || 'strict' in body) {
+      if ('strict' in body && typeof body.strict !== 'boolean') fail(400, '严格模式须为布尔值');
+      next.strict = body.strict !== false;
     }
     if (isNew || 'downZipPassword' in body) next.downZipPassword = String(body.downZipPassword ?? '').slice(0, 200);
     if (isNew || 'lemon' in body) {
@@ -433,7 +440,7 @@ export function setupAdminRoutes(router, ctx) {
       if (old.subFolder !== c.subFolder || JSON.stringify(old.problems) !== JSON.stringify(c.problems))
         ctx.lemon.rt(c).needTasks = true;
     }
-    if (renames.size && ctx.lemon.linked(c)) {
+    if ((renames.size || old?.subFolder !== c.subFolder) && ctx.lemon.linked(c)) {
       ctx.lemon.rt(c).remote = null;
       ctx.lemon.flushUploads(c).then(() => {
         if (c.lemon.interval === 0) { ctx.lemon.rt(c).pending = true; ctx.lemon.kick(c); }
@@ -482,6 +489,7 @@ export function setupAdminRoutes(router, ctx) {
     const c = getContest(p.id);
     data.contests = data.contests.filter((x) => x !== c);
     delete data.submissions[c.id];
+    delete data.participants[c.id];
     delete data.finished[c.id];
     delete data.lemonState[c.id];
     delete data.lemonPending[c.id];
@@ -560,6 +568,7 @@ export function setupAdminRoutes(router, ctx) {
         };
       }
       return { id: u.id, username: u.username, realName: u.realName, cells, total, finishedAt: data.finished[c.id]?.[u.id] ?? null,
+        joinedAt: joinedAt(data, c, u.id),
         extraMinutes: extraMinutes(c, u.id), endTime: contestantEnd(c, u.id),
         canExtend: allowedFor(c, u) && !data.finished[c.id]?.[u.id] && Date.now() < contestantEnd(c, u.id) };
     });
@@ -618,6 +627,10 @@ export function setupAdminRoutes(router, ctx) {
   route('GET', '/api/admin/contests/:id/archive.zip', (req, res, p) => {
     const c = getContest(p.id);
     const entries = [];
+    for (const uid of Object.keys(data.participants[c.id] || {})) {
+      const user = ctx.user(uid);
+      if (user) entries.push({ name: `${c.name}/${user.username}/`, data: Buffer.alloc(0) });
+    }
     for (const [uid, probs] of Object.entries(data.submissions[c.id] || {})) {
       const u = ctx.user(uid);
       if (!u) continue;

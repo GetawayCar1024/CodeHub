@@ -311,7 +311,16 @@ function shell(active, ...content) {
 }
 
 function go(hash) {
+  if (hash === '#/login') rememberLoginReturn(location.hash);
   if (location.hash === hash) route(); else location.hash = hash;
+}
+function rememberLoginReturn(hash) {
+  if (typeof hash === 'string' && hash.startsWith('#/') && !hash.startsWith('#/login') && hash.length <= 2048) sessionStorage.setItem('codehub.loginReturn', hash);
+}
+function loginReturn() {
+  const hash = sessionStorage.getItem('codehub.loginReturn');
+  sessionStorage.removeItem('codehub.loginReturn');
+  return typeof hash === 'string' && hash.startsWith('#/') && !hash.startsWith('#/login') && hash.length <= 2048 ? hash : '#/';
 }
 window.addEventListener('hashchange', route);
 
@@ -326,7 +335,7 @@ async function route() {
   const u = S.status.user;
   document.title = S.status.siteTitle;
   if (!u) return parts[0] === 'login' ? renderLogin() : go('#/login');
-  if (parts[0] === 'login') return go('#/');
+  if (parts[0] === 'login') return go(loginReturn());
   try {
     if (u.role === 'admin') {
       if (parts[0] !== 'admin') return go('#/admin');
@@ -354,6 +363,7 @@ async function route() {
 
 function renderLogin() {
   clearTimers();
+  document.querySelectorAll('.overlay').forEach(overlay => overlay.remove());
   $app.classList.add('login-page');
   const user = h('input', { type: 'text', placeholder: '用户名', autocomplete: 'username' });
   const pass = h('input', { type: 'password', placeholder: '密码', autocomplete: 'current-password' });
@@ -367,7 +377,7 @@ function renderLogin() {
     try {
       const r = await api('POST', '/api/login', { username: user.value.trim(), password: pass.value }, { noRedirect: true });
       S.status.user = r.user;
-      go('#/');
+      go(loginReturn());
     } catch (err) { fail(err); } finally { btn.disabled = false; }
   };
   put($app, 
@@ -404,11 +414,11 @@ async function renderContestList(page = 1) {
     main.appendChild(h('div', { class: 'card empty' }, '当前没有比赛'));
   } else {
     append(main, h('div', { class: 'group contest-list' }, r.contests.map((c) =>
-      h('div', { class: 'row link', onclick: () => go('#/c/' + c.id) },
+      h('div', { class: 'row link', 'data-contest': c.id, 'aria-disabled': !!c.historyBlocked, onclick: () => c.historyBlocked ? toast('正在参加严格模式比赛，暂时不能查看历史比赛', true) : go('#/c/' + c.id) },
         h('div', { class: 'grow' },
-          h('div', { class: 'name' }, c.title),
+          h('div', { class: 'name' }, c.title, h('span', { class: 'muted small', style: { marginLeft: '10px' } }, c.strict ? '严格模式' : '非严格模式')),
           h('div', { class: 'muted small' }, fmtRange(c.startTime, c.endTime))),
-        h('span', { class: 'badge ' + PHASE_BADGE[c.phase] }, PHASE[c.phase]),
+        h('span', { class: 'badge ' + PHASE_BADGE[c.phase] }, c.historyBlocked ? '暂不可查看' : PHASE[c.phase]),
         h('span', { class: 'chev' }, '›')))),
     pager(r.page, r.pages, (p) => (p > 1 ? '#/page/' + p : '#/')));
   }
@@ -465,6 +475,7 @@ function sourceDialog(title, code) {
 
 async function renderContest(id) {
   let c = await api('GET', '/api/contests/' + id);
+  if (c.requiresConfirmation) return renderJoinConfirmation(c);
   let refreshing = false;
   const main = shell(null);
   const head = h('div');
@@ -487,11 +498,12 @@ async function renderContest(id) {
             h('li', null, h('span', { class: 'k' }, '账号'), c.user.username),
             c.user.groups.length ? h('li', null, h('span', { class: 'k' }, '分组'), c.user.groups.join('、')) : null,
             h('li', null, h('span', { class: 'k' }, '时间'), fmtRange(c.startTime, c.endTime)),
+            h('li', null, h('span', { class: 'k' }, '模式'), c.strict ? '严格模式' : '非严格模式'),
             c.extraMinutes ? h('li', null, h('span', { class: 'k' }, '延时'), `已增加 ${c.extraMinutes} 分钟`) : null),
           h('div', { class: 'flex', style: { marginTop: '12px' } },
             h('button', { onclick: () => refresh(true) }, '刷新页面'),
             running && !c.finishedAt ? h('button', { class: 'danger', onclick: finishEarly }, '提前结束比赛') : null),
-          c.finishedAt ? h('div', { class: 'finished-note' }, `你已于 ${fmtTime(c.finishedAt, false).slice(6)} 结束比赛，不能再提交`) : null),
+          c.finishedAt && c.phase !== 'ended' ? h('div', { class: 'finished-note' }, `你已于 ${fmtTime(c.finishedAt, false).slice(6)} 结束比赛，不能再提交`) : null),
         h('ul', { class: 'steps' },
           step(0, '下载考生手册并仔细阅读', c.manual ? h('a', { href: '/api/manual', target: '_blank' }, '下载') : h('span', { class: 'muted' }, '暂无考生手册')),
           step(1, '下载试题包并解压', h('span', { 'data-material': 'downzip' },
@@ -535,8 +547,9 @@ async function renderContest(id) {
       || (c.passwordState === 'pending' && t >= c.passwordReleaseAt)
       || (!c.problemsReleased && t >= c.problemsReleaseAt);
     if (phase !== c.phase || releaseDue) return refresh();
-    lblEl.textContent = phase === 'before' ? '距离开始' : phase === 'running' ? '距离结束' : '已结束';
-    timeEl.textContent = phase === 'before' ? fmtDuration(c.startTime - t) : phase === 'running' ? fmtDuration(c.endTime - t) : '00:00:00';
+    lblEl.textContent = phase === 'before' ? '距离开始' : phase === 'running' ? '距离结束' : '';
+    timeEl.classList.toggle('ended', phase === 'ended');
+    timeEl.textContent = phase === 'before' ? fmtDuration(c.startTime - t) : phase === 'running' ? fmtDuration(c.endTime - t) : '已结束';
   };
 
   const finishEarly = async () => {
@@ -561,7 +574,7 @@ async function renderContest(id) {
       }
       if (manual) toast('已刷新');
     } catch (e) {
-      if (e.status === 404) { toast(e.message, true); go('#/'); } else if (manual) fail(e);
+      if (e.status === 404 || e.status === 403) { toast(e.message, true); go('#/'); } else if (manual) fail(e);
     } finally { refreshing = false; }
   };
 
@@ -600,6 +613,26 @@ async function renderContest(id) {
   renderCards();
   every(1000, tick);
   every(5000, () => refresh());
+}
+
+function renderJoinConfirmation(c) {
+  const join = h('button', { class: 'primary', 'data-join-contest': c.id, onclick: async () => {
+    join.disabled = true;
+    try { await api('POST', `/api/contests/${c.id}/join`, { confirm: true, strict: c.strict }); await route(); }
+    catch (error) { fail(error); if (error.status === 409) route(); else if ([403, 404].includes(error.status)) go('#/'); }
+    finally { join.disabled = false; }
+  } }, '确认参加');
+  const main = shell(null, h('div', { class: 'card join-confirmation', 'data-join-confirmation': c.id },
+    h('h1', null, c.title),
+    h('ul', { class: 'kv' },
+      h('li', null, h('span', { class: 'k' }, '时间'), fmtRange(c.startTime, c.endTime)),
+      h('li', null, h('span', { class: 'k' }, '时长'), `${Number(c.durationMinutes.toFixed(2))} 分钟`),
+      h('li', null, h('span', { class: 'k' }, '模式'), c.strict ? '严格模式' : '非严格模式'),
+      h('li', null, h('span', { class: 'k' }, '选手'), `${c.user.realName}（${c.user.username}）`)),
+    h('p', { class: 'muted' }, c.strict ? '确认参加后，结束本场比赛前暂时无法查看历史比赛。仍可同时参加其他比赛。' : '可以同时参加其他比赛，也可以查看历史比赛。'),
+    h('div', { class: 'flex' }, h('button', { onclick: () => go('#/'), 'data-decline-contest': true }, '不参加，返回'), join)));
+  main.classList.add('narrow');
+  refreshWhenChanged('/api/contests/' + c.id, c);
 }
 
 // ============================================================ admin: contests
@@ -649,7 +682,7 @@ async function renderContestForm(id) {
   const f = contest ? structuredClone(contest) : {
     name: '', title: '', startTime: t0.getTime(), endTime: t0.getTime() + 4 * 3600000, earlyMinutes: 30,
     downZipReleaseMinutes: 30, passwordReleaseMinutes: 0,
-    problems: [{ name: '', title: '' }], groups: [], subFolder: false, downZipPassword: '', lemon: { contest: '', interval: null },
+    problems: [{ name: '', title: '' }], groups: [], subFolder: false, strict: true, downZipPassword: '', lemon: { contest: '', interval: null },
   };
   // In the editor, title holds only a custom display name; '' means "same as the file name".
   // Keeping the saved copy of the old name here made it reappear (and be saved) after a rename + re-render.
@@ -680,6 +713,7 @@ async function renderContestForm(id) {
       row('标题', input('title', { placeholder: '留空则同比赛名' })),
       row('开始时间', timeInput('startTime')),
       row('结束时间', timeInput('endTime')),
+      row('严格模式', switchEl(f.strict !== false, value => { f.strict = value; })),
       row('提前进入', minuteInput('earlyMinutes', '提前进入时间'), h('span', { class: 'muted' }, '分钟（开赛前）'))));
 
   // --- problems
@@ -824,11 +858,10 @@ async function renderContestForm(id) {
     h('div', { class: 'section-foot' }, '0 表示开赛时；须满足 提前进入 ≥ down.zip 公开 ≥ 密码公布。题目名与密码同时公布'));
 
   // --- storage
-  const locked = contest?.hasSubmissions;
   append(main, h('div', { class: 'section-title' }, '存储'),
     h('div', { class: 'group' },
-      row('子文件夹', switchEl(f.subFolder, (v) => { f.subFolder = v; }, locked))),
-    h('div', { class: 'section-foot' }, '位于 ', h('code', null, settings.effectiveStorageRoot)));
+      row('子文件夹', switchEl(f.subFolder, (v) => { f.subFolder = v; }))),
+    h('div', { class: 'section-foot' }, '切换时自动迁移已有代码。位于 ', h('code', null, settings.effectiveStorageRoot)));
 
   // --- LemonServer
   if (lemonOn || f.lemon.contest) {
@@ -1114,7 +1147,18 @@ async function renderUsers() {
   const head = h('div', { class: 'page-head' }, h('h2', null, '用户'),
     h('div', { class: 'right' },
       h('button', { onclick: () => groupsDialog() }, '分组'),
-      h('a', { class: 'btn', href: '/api/admin/users/export.csv' }, '导出'),
+      h('button', { 'data-export-users': true, onclick: () => {
+        const format = h('select', { 'aria-label': '导出文件类型' }, ...['csv', 'tsv', 'txt', 'json'].map(type => h('option', { value: type }, type.toUpperCase())));
+        const scope = sel.size ? `已选 ${sel.size} 名用户` : groupFilter === 'none' ? '未分组用户' : groupFilter ? `分组：${gname(Number(groupFilter))}` : '全部用户';
+        modal('导出用户', h('div', { class: 'stack' }, h('p', null, scope), row('文件类型', format)), [
+          { label: '取消' }, { label: '下载', primary: true, onClick: () => {
+            const query = new URLSearchParams({ format: format.value });
+            if (sel.size) query.set('ids', [...sel].join(',')); else if (groupFilter) query.set('group', groupFilter);
+            const link = h('a', { href: '/api/admin/users/export?' + query, download: 'users.' + format.value });
+            document.body.appendChild(link); link.click(); link.remove();
+          } },
+        ]);
+      } }, '导出'),
       h('button', { class: 'primary', onclick: () => importDialog() }, '导入用户')));
   const toolbar = h('div', { class: 'toolbar' }, search, filterSel);
   const bulk = h('div');

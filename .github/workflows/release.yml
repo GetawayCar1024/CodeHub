@@ -38,6 +38,9 @@ jobs:
       - name: Login layout regression
         run: node tests/login-layout.mjs
 
+      - name: Participation and user exports
+        run: node --test tests/participation.mjs
+
       - name: Package
         run: node packaging/package.mjs windows
 
@@ -87,6 +90,9 @@ jobs:
 
       - name: Login layout regression
         run: node tests/login-layout.mjs
+
+      - name: Participation and user exports
+        run: node --test tests/participation.mjs
 
       - name: Package
         id: pkg

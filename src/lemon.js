@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { lastEnd } from './contest-time.js';
+import { joinedAt } from './participation.js';
 
 export class LemonError extends Error {
   constructor(status, message, body) {
@@ -105,6 +106,13 @@ export class LemonLink {
 
   // ---- submissions ----
 
+  onJoin(c, user) {
+    if (!this.linked(c)) return;
+    this.pendingOf(c)[user.id + '|'] = Date.now() + Math.random();
+    this.ctx.store.save();
+    this.flushUploads(c);
+  }
+
   onSubmit(c, user, problem) {
     if (!this.linked(c)) return;
     this.pendingOf(c)[user.id + '|' + problem] = Date.now() + Math.random();
@@ -120,6 +128,8 @@ export class LemonLink {
   markAllPending(c) {
     const subs = this.ctx.data.submissions[c.id] || {};
     const pending = this.pendingOf(c);
+    for (const user of this.ctx.data.users)
+      if (user.role !== 'admin' && joinedAt(this.ctx.data, c, user.id)) pending[user.id + '|'] = Date.now() + Math.random();
     for (const [uid, probs] of Object.entries(subs))
       for (const p of Object.keys(probs)) pending[uid + '|' + p] = Date.now() + Math.random();
     this.ctx.store.save();
@@ -141,6 +151,17 @@ export class LemonLink {
       const version = pending[key]; // a newer submission arriving during the upload keeps it pending
       const [uid, problem] = key.split('|');
       const user = this.ctx.data.users.find((u) => String(u.id) === uid);
+      if (!problem) {
+        if (!user || !joinedAt(this.ctx.data, c, user.id)) { delete pending[key]; continue; }
+        try {
+          await this.client.call('POST', this.cpath(c) + '/files/mkdir', { json: { root: 'source', path: user.username } });
+          if (pending[key] === version) delete pending[key];
+          rt.uploadError = null;
+        } catch (e) {
+          rt.uploadError = e.message; rt.uploadErrorAt = Date.now(); this.ctx.store.save(); return false;
+        }
+        continue;
+      }
       const sub = this.ctx.data.submissions[c.id]?.[uid]?.[problem];
       const file = user && sub ? this.ctx.submissionFile(c, user.username, problem) : null;
       if (!file || !fs.existsSync(file)) {
@@ -185,13 +206,17 @@ export class LemonLink {
   }
 
   async ensureTasks(c) {
-    const remote = await this.client.call('GET', this.cpath(c));
-    this.cache(c, remote);
-    for (let i = 0; i < remote.tasks.length; i++) {
-      if (remote.tasks[i].subFolderCheck !== !!c.subFolder)
-        await this.client.call('PUT', this.cpath(c) + '/tasks/' + i, { json: { subFolderCheck: !!c.subFolder } });
-    }
-    this.rt(c).needTasks = false;
+    const rt = this.rt(c);
+    rt.tasksUpdating = (rt.tasksUpdating || 0) + 1;
+    try {
+      const remote = await this.client.call('GET', this.cpath(c));
+      this.cache(c, remote);
+      for (let i = 0; i < remote.tasks.length; i++) {
+        if (remote.tasks[i].subFolderCheck !== !!c.subFolder)
+          await this.client.call('PUT', this.cpath(c) + '/tasks/' + i, { json: { subFolderCheck: !!c.subFolder } });
+      }
+      rt.needTasks = false;
+    } finally { rt.tasksUpdating--; }
   }
 
   cache(c, remote) {

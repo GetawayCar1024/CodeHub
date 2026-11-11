@@ -37,6 +37,7 @@ async function fixture(subFolder, run) {
     c.startTime = Date.now() - 1000;
     const endpoint = `/api/admin/contests/${c.id}`;
     const userEndpoint = `/api/contests/${c.id}`;
+    for (const call of [alice, bob]) await call('POST', userEndpoint + '/join', { confirm: true, strict: true });
     const users = Object.fromEntries(app.ctx.data.users.map(user => [user.username, user]));
     const file = (user, problem) => app.ctx.submissionFile(c, user, problem);
     const alpha = 'int main(){return 0;} // alpha\r\n';
@@ -51,6 +52,43 @@ async function fixture(subFolder, run) {
     await new Promise(resolve => app.server.close(resolve));
     fs.rmSync(home, { recursive: true, force: true });
   }
+}
+
+for (const original of [false, true]) {
+  test(`layout changes migrate all submissions and retain counts (from ${original})`, async () => fixture(original, async ({ app, admin, alice, endpoint, userEndpoint, c, file, alpha, beta, submitted }) => {
+    await admin('PUT', endpoint, { subFolder: !original, name: 'layout-moved', problems: [{ name: 'gamma', previousName: 'alpha' }, { name: 'beta' }] });
+    assert.equal(c.subFolder, !original);
+    assert.equal(fs.readFileSync(file('alice', 'gamma'), 'utf8'), alpha);
+    assert.equal(fs.readFileSync(file('alice', 'beta'), 'utf8'), beta);
+    assert.equal(fs.readFileSync(file('bob', 'gamma'), 'utf8'), '// bob\n');
+    assert.equal((await alice('GET', userEndpoint + '/source/gamma')).count, submitted.count);
+    await admin('PUT', endpoint, { subFolder: original });
+    assert.equal(fs.readFileSync(file('alice', 'gamma'), 'utf8'), alpha);
+    assert.ok(!(fs.readdirSync(path.dirname(file('alice', 'gamma')))).some(name => name.startsWith('.codehub-rename-')));
+    const state = JSON.parse(fs.readFileSync(app.ctx.store.file, 'utf8'));
+    assert.equal(state.contests[0].subFolder, original);
+  }));
+  test(`layout failures leave settings and files intact (from ${original})`, async () => fixture(original, async ({ app, admin, endpoint, c, file, alpha }) => {
+    const target = app.ctx.submissionFile({ ...c, subFolder: !original }, 'bob', 'alpha');
+    fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, 'unrelated');
+    await admin('PUT', endpoint, { subFolder: !original }, 409);
+    assert.equal(c.subFolder, original);
+    assert.equal(fs.readFileSync(file('alice', 'alpha'), 'utf8'), alpha);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'unrelated');
+  }));
+  test(`layout persistence failures roll back directory creation and code (from ${original})`, async () => fixture(original, async ({ app, admin, endpoint, c, file, alpha }) => {
+    app.ctx.store.flush();
+    const target = app.ctx.submissionFile({ ...c, subFolder: !original }, 'alice', 'alpha');
+    const flush = app.ctx.store.flush;
+    app.ctx.store.flush = () => { throw Error('injected save failure'); };
+    try {
+      await admin('PUT', endpoint, { subFolder: !original }, 500);
+      assert.equal(c.subFolder, original); assert.equal(fs.readFileSync(file('alice', 'alpha'), 'utf8'), alpha);
+      assert.equal(fs.existsSync(target), false);
+    } finally { app.ctx.store.flush = flush; }
+    await admin('PUT', endpoint, { subFolder: !original });
+    assert.equal(fs.readFileSync(target, 'utf8'), alpha);
+  }));
 }
 
 for (const subFolder of [false, true]) {

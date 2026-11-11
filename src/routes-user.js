@@ -6,6 +6,7 @@ import { checkPassword, hashPassword } from './util.js';
 import { VERSION } from './version.js';
 import { contestMaterials } from './contest-materials.js';
 import { allowedFor, contestPhase, contestantEnd, extraMinutes } from './contest-time.js';
+import { historyBlocked, joinedAt, joinContest } from './participation.js';
 export { allowedFor, contestPhase } from './contest-time.js';
 
 // Running and future contests first (earliest start first), then ended ones (latest start first).
@@ -52,12 +53,14 @@ export function setupUserRoutes(router, ctx) {
   };
 
   // Once open, an allowed contest remains readable after its individual deadline.
-  const openContest = (req, id) => {
+  const openContest = (req, id, requireJoined = false) => {
     const user = needUser(req);
     const c = ctx.contest(id);
     if (!c || !allowedFor(c, user)) fail(404, '比赛不存在');
     const phase = contestPhase(c, Date.now(), user.id);
     if (phase === 'upcoming') fail(404, '比赛尚未开放');
+    if (historyBlocked(data, c, user)) fail(403, '正在参加严格模式比赛，暂时不能查看历史比赛');
+    if (requireJoined && phase !== 'ended' && !joinedAt(data, c, user.id)) fail(403, '请先确认参加比赛');
     return { c, user, phase };
   };
 
@@ -105,16 +108,24 @@ export function setupUserRoutes(router, ctx) {
       return allowedFor(c, user) && phase !== 'upcoming';
     });
     const { items, ...pageInfo } = paginate(req, sortContests(open.map(c => ({ ...c, endTime: contestantEnd(c, user.id) })), now));
-    const contests = items.map((c) => ({ id: c.id, title: c.title, startTime: c.startTime, endTime: c.endTime, phase: contestPhase(c, now), problems: c.problems.length }));
+    const contests = items.map((c) => ({ id: c.id, title: c.title, startTime: c.startTime, endTime: c.endTime, phase: contestPhase(c, now), problems: c.problems.length,
+      strict: c.strict !== false, joinedAt: joinedAt(data, c, user.id), historyBlocked: historyBlocked(data, ctx.contest(c.id), user, now) }));
     return { serverTime: now, ...pageInfo, contests };
   });
 
   router.get('/api/contests/:id', async (req, res, p) => {
     const { c, user, phase } = openContest(req, p.id);
+    const joined = joinedAt(data, c, user.id);
+    const summary = { id: c.id, title: c.title, startTime: c.startTime, endTime: contestantEnd(c, user.id), originalEndTime: c.endTime,
+      strict: c.strict !== false, joinedAt: joined, phase, serverTime: Date.now(), durationMinutes: (contestantEnd(c, user.id) - c.startTime) / 60000,
+      user: { username: user.username, realName: user.realName, groups: (user.groups || []).map(g => data.groups.find(x => x.id === g)?.name).filter(Boolean) } };
+    if (!joined && phase !== 'ended') return { ...summary, requiresConfirmation: true };
     const subs = data.submissions[c.id]?.[user.id] || {};
     const serverTime = Date.now();
     const materials = contestMaterials(c, serverTime);
     return {
+      ...summary,
+      requiresConfirmation: false,
       id: c.id,
       title: c.title,
       startTime: c.startTime,
@@ -133,8 +144,18 @@ export function setupUserRoutes(router, ctx) {
     };
   });
 
+  router.post('/api/contests/:id/join', async (req, res, p) => {
+    needUser(req);
+    const body = await readJson(req);
+    const { c, user, phase } = openContest(req, p.id);
+    if (body.confirm !== true) fail(400, '请确认参加比赛');
+    if (body.strict !== (c.strict !== false)) fail(409, '比赛模式已改变，请刷新后重新确认');
+    if (phase === 'ended') fail(409, '比赛已结束');
+    return { joinedAt: joinContest(ctx, c, user) };
+  });
+
   router.get('/api/contests/:id/down.zip', (req, res, p) => {
-    const { c } = openContest(req, p.id);
+    const { c } = openContest(req, p.id, true);
     const materials = contestMaterials(c);
     if (materials.downZipState === 'unset') fail(404, '未设置 down.zip');
     if (materials.downZipState !== 'available') fail(403, 'down.zip 待下发，尚未到公开时间');
@@ -142,7 +163,7 @@ export function setupUserRoutes(router, ctx) {
   });
 
   router.post('/api/contests/:id/submit', async (req, res, p) => {
-    const { c, user, phase } = openContest(req, p.id);
+    const { c, user, phase } = openContest(req, p.id, true);
     const body = await readJson(req, data.settings.maxCodeKiB * 1024 * 2 + 4096);
     if (phase !== 'running') fail(403, phase === 'before' ? '比赛尚未开始' : '比赛已结束');
     if (data.finished[c.id]?.[user.id]) fail(403, '你已结束比赛，不能再提交');
@@ -167,7 +188,7 @@ export function setupUserRoutes(router, ctx) {
 
   // Finish the contest early: no more submissions, the contest page stays open until the contest ends.
   router.post('/api/contests/:id/finish', (req, res, p) => {
-    const { c, user, phase } = openContest(req, p.id);
+    const { c, user, phase } = openContest(req, p.id, true);
     if (phase !== 'running') fail(403, phase === 'before' ? '比赛尚未开始' : '比赛已结束');
     const mine = (data.finished[c.id] ??= {});
     if (!mine[user.id]) {
@@ -179,7 +200,7 @@ export function setupUserRoutes(router, ctx) {
   });
 
   router.get('/api/contests/:id/source/:problem', (req, res, p) => {
-    const { c, user } = openContest(req, p.id);
+    const { c, user } = openContest(req, p.id, true);
     if (!contestMaterials(c).problemsReleased) fail(403, '题目待公布');
     const sub = data.submissions[c.id]?.[user.id]?.[p.problem];
     if (!sub) fail(404, '尚未提交');

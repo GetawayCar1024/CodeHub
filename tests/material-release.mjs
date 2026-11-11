@@ -43,6 +43,8 @@ async function fixture(t, run, { materials = true, schedule = {} } = {}) {
       downZipPassword: materials ? PASSWORD : '', ...schedule };
     const { value: created } = await admin('POST', '/api/admin/contests', body);
     const c = app.ctx.contest(created.id), adminPath = `/api/admin/contests/${c.id}`, publicPath = `/api/contests/${c.id}`;
+    // These regressions isolate disclosure timing; entry confirmation has its own API/UI suite.
+    app.ctx.data.participants[c.id] = { [app.ctx.data.users.find(user => user.username === 'student').id]: clock };
     if (materials) await admin('PUT', adminPath + '/downzip?name=down.zip', undefined, { raw: ZIP });
     await run({ admin, student, outsider, anonymous, app, home, c, created, body, start, adminPath, publicPath, at: value => { clock = value; } });
   } finally {

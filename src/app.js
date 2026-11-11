@@ -9,6 +9,7 @@ import { Store } from './store.js';
 import { hashPassword, randomToken } from './util.js';
 import { setupUserRoutes } from './routes-user.js';
 import { setupAdminRoutes } from './routes-admin.js';
+import { joinedAt } from './participation.js';
 
 export { VERSION } from './version.js';
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -31,6 +32,7 @@ const DEFAULTS = {
   groups: [],
   contests: [],
   submissions: {},
+  participants: {}, // contest id -> user id -> first confirmed entry time
   // contest id -> user id -> when the contestant finished the contest early
   finished: {},
   sessions: {},
@@ -51,6 +53,12 @@ const MIME = {
 export function createApp({ dataDir, resetAdmin = false, log = console.log }) {
   const store = new Store(path.join(dataDir, 'codehub.json'));
   const data = store.load(DEFAULTS);
+  for (const c of data.contests) for (const uid of new Set([
+    ...Object.keys(data.submissions[c.id] || {}), ...Object.keys(data.finished[c.id] || {}),
+  ])) {
+    const time = joinedAt(data, c, uid);
+    if (time) (data.participants[c.id] ??= {})[uid] = time;
+  }
 
   const ctx = {
     data,

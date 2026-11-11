@@ -46,6 +46,7 @@ export function createZip(entries) {
     central.writeUInt32LE(body.length, 20);
     central.writeUInt32LE(raw.length, 24);
     central.writeUInt16LE(name.length, 28);
+    if (e.name.endsWith('/')) central.writeUInt32LE(0x10, 38);
     central.writeUInt32LE(offset, 42);
     centrals.push(central, name);
     offset += 30 + name.length + body.length;
