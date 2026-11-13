@@ -417,4 +417,8 @@ table.list td.cell.clickable { cursor: pointer; }
 }
 .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .toolbar .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.board-tools { min-height: 34px; }
+.board-tools .bulkbar { margin-bottom: 0; padding: 4px 10px; }
+table.list th.pick, table.list td.pick { width: 28px; padding-right: 0; }
+table.list tr.absent td:not(.cell) { color: var(--muted); }
 .err-list { max-height: 160px; overflow: auto; font-size: 13px; color: var(--red); margin-top: 8px; }

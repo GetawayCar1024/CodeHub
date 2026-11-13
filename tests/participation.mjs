@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { createApp } from '../src/app.js';
+import { checkPassword } from '../src/util.js';
 
 async function fixture(run) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codehub-participation-'));
@@ -106,6 +107,23 @@ test('multiple participation and strict-mode history restrictions use individual
   await admin('PUT', `/api/admin/contests/${b.id}`, { strict: 'false' }, 400);
 }));
 
+test('a confirmed strict contest blocks ended contests even before it starts, but never running or upcoming ones', async () => fixture(async ({ alice, create, join }) => {
+  const history = await create('old'); history.endTime = Date.now() - 1; history.startTime = history.endTime - 60000;
+  const strict = await create('strict-later'), other = await create('other-running', { strict: false });
+  other.startTime = Date.now() - 1000;
+  await join(strict);
+  await alice('GET', `/api/contests/${history.id}`, undefined, 403);
+  // the start moves later: the contest is no longer open, but the confirmation still counts
+  strict.startTime = Date.now() + 7 * 24 * 3600000; strict.endTime = strict.startTime + 3600000;
+  await alice('GET', `/api/contests/${strict.id}`, undefined, 404);
+  await alice('GET', `/api/contests/${history.id}`, undefined, 403);
+  assert.equal((await alice('GET', `/api/contests/${other.id}`)).phase, 'running');
+  await join(other);
+  assert.equal((await alice('GET', `/api/contests/${other.id}`)).requiresConfirmation, false);
+  strict.endTime = Date.now() - 1; strict.startTime = strict.endTime - 60000;
+  await alice('GET', `/api/contests/${history.id}`);
+}));
+
 test('failed confirmation rolls back both participant state and newly created folders', async () => fixture(async ({ app, alice, create, user }) => {
   const c = await create('failed-confirmation');
   const flush = app.ctx.store.flush;
@@ -131,8 +149,40 @@ test('exports select users before groups and support CSV, TSV, TXT and JSON with
     assert.ok(body.includes('alice') && !body.includes('bob') && !body.includes('passwordHash'));
     assert.ok(body.includes("'=formula,")); assert.ok(body.includes('""quoted""'));
   }
-  assert.ok((await admin('GET', '/api/admin/users/export.csv')).includes('用户名'));
+  assert.ok((await admin('GET', '/api/admin/users/export.csv')).replace(/^\uFEFF/, '').startsWith('用户名,密码,真实姓名,分组\r\n'));
   await admin('GET', endpoint + '?format=xlsx', undefined, 400);
   await admin('GET', endpoint + '?ids=99999', undefined, 400);
   await alice('GET', endpoint, undefined, 403); await anonymous('GET', endpoint, undefined, 401);
+}));
+
+test('exported CSV, TSV and TXT files import back unchanged, keeping passwords; old exports are read by header', async () => fixture(async ({ app, admin, alice }) => {
+  const user = app.ctx.data.users.find(item => item.username === 'alice');
+  await admin('POST', '/api/admin/groups', { name: 'g,1' });
+  await admin('POST', '/api/admin/users/batch', { ids: [user.id], action: 'addGroups', groups: [app.ctx.data.groups.find(g => g.name === 'g,1').id] });
+  const snapshot = () => app.ctx.data.users.filter(u => u.role !== 'admin').map(u => ({ username: u.username, realName: u.realName, groups: [...u.groups].sort(), hash: u.passwordHash }));
+  for (const [name, realName] of [['plain', 'Plain'], ['alice', '-张,三 "A"\n二行'], ['bob', '=SUM(1)']]) app.ctx.data.users.find(u => u.username === name).realName = realName;
+  const before = snapshot();
+  for (const format of ['csv', 'tsv', 'txt']) {
+    const text = await admin('GET', `/api/admin/users/export?format=${format}`);
+    const result = await admin('POST', '/api/admin/users/import', { text, mode: 'overwrite' });
+    assert.deepEqual([result.errors, result.added, result.updated], [[], 0, 3], format);
+    assert.deepEqual(snapshot(), before, `${format} round trip must not change names, groups or passwords`);
+    const skipped = await admin('POST', '/api/admin/users/import', { text });
+    assert.deepEqual([skipped.added, skipped.skipped], [0, 3]);
+  }
+  await alice('GET', '/api/contests'); // the session survives a re-import without passwords
+  const old = '\uFEFF用户名,真实姓名,分组\r\nalice,Alice Again,one\r\nnew-user,New,one';
+  const rejected = await admin('POST', '/api/admin/users/import', { text: old, mode: 'overwrite' });
+  assert.deepEqual(rejected.errors, [{ line: 3, message: '密码为空（新用户须填写密码）' }]);
+  const header = await admin('POST', '/api/admin/users/import', { text: '账号\t姓名\t密码\nnew-user\t新 用户\tpw-123456\nalice\tAlice Again\t', mode: 'overwrite' });
+  assert.deepEqual([header.errors, header.added, header.updated], [[], 1, 1]);
+  const created = app.ctx.data.users.find(u => u.username === 'new-user');
+  assert.equal(created.realName, '新 用户');
+  assert.ok(checkPassword('pw-123456', created.passwordHash));
+  assert.equal(user.realName, 'Alice Again');
+  const quoted = await admin('POST', '/api/admin/users/import', { text: 'quoted,"p,w","Q ""uote""","x;y"', mode: 'overwrite' });
+  assert.deepEqual(quoted.errors, []);
+  const q = app.ctx.data.users.find(u => u.username === 'quoted');
+  assert.equal(q.realName, 'Q "uote"');
+  assert.deepEqual(q.groups.map(id => app.ctx.data.groups.find(g => g.id === id).name), ['x', 'y']);
 }));

@@ -10,10 +10,13 @@ export function joinedAt(data, contest, uid) {
   return times.length ? Math.min(...times) : null;
 }
 
+// Once a contestant confirms a strict contest, ended contests stay hidden until it is over for them
+// (early finish or their own deadline), even if it has not started yet or its start was moved later.
+// Running and upcoming contests are not affected.
 export function historyBlocked(data, contest, user, now = Date.now()) {
   return contestPhase(contest, now, user.id) === 'ended' && data.contests.some(c =>
     c.strict !== false && allowedFor(c, user) && joinedAt(data, c, user.id) && !data.finished[c.id]?.[user.id]
-    && ['before', 'running'].includes(contestPhase(c, now, user.id)));
+    && contestPhase(c, now, user.id) !== 'ended');
 }
 
 export function joinContest(ctx, contest, user) {

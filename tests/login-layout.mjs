@@ -239,17 +239,34 @@ try {
   console.log('PASS board score/name ordering, sort indicators and click-to-view');
 
   await wait(`!!document.querySelector('[data-extend="${user.id}"]')`);
-  let accumulated = 0;
-  for (const minutes of [5, 10]) {
+  for (const minutes of [15, 10]) {
     await evaluate(`document.querySelector('[data-extend="${user.id}"]').click()`);
-    await wait(`!!document.querySelector('.overlay input[aria-label="本次延时分钟数"]')`);
-    await evaluate(`document.querySelector('.overlay input[aria-label="本次延时分钟数"]').value=${minutes};[...document.querySelectorAll('.overlay button')].find(button=>button.textContent==='保存延时').click()`);
+    await wait(`!!document.querySelector('.overlay input[aria-label="延时分钟数"]')`);
+    await evaluate(`document.querySelector('.overlay input[aria-label="延时分钟数"]').value=${minutes};[...document.querySelectorAll('.overlay button')].find(button=>button.textContent==='保存延时').click()`);
     await wait('!document.querySelector(".overlay")');
-    accumulated += minutes;
-    assert.equal(contest.extraMinutes[user.id] || 0, accumulated);
+    assert.equal(contest.extraMinutes[user.id] || 0, minutes, 'the entered value replaces the previous extra time');
   }
-  delete contest.extraMinutes[user.id];
-  console.log('PASS per-contestant extra-time controls');
+  await evaluate(`api('POST','/api/admin/users/import',{text:'dora,test-password,Dora'})`);
+  await evaluate('route()');
+  const dora = app.ctx.data.users.find(item => item.username === 'dora');
+  await wait(`!!document.querySelector('[data-pick="${dora.id}"]')`);
+  assert.equal(await evaluate(`document.querySelector('[data-show-absent]').checked`), true, 'contestants who did not join are shown by default');
+  await evaluate(`document.querySelector('[data-pick-all]').click()`);
+  await wait('!!document.querySelector("[data-extend-selected]")');
+  await evaluate(`document.querySelector('[data-extend-selected]').click()`);
+  await wait(`!!document.querySelector('.overlay input[aria-label="延时分钟数"]')`);
+  await evaluate(`document.querySelector('.overlay input[aria-label="延时分钟数"]').value=7;[...document.querySelectorAll('.overlay button')].find(button=>button.textContent==='保存延时').click()`);
+  await wait('!document.querySelector(".overlay")');
+  assert.deepEqual([contest.extraMinutes[user.id], contest.extraMinutes[dora.id]], [7, 7]);
+  await evaluate(`document.querySelector('[data-show-absent]').click()`);
+  await wait(`!document.querySelector('tr[data-user="dora"]')`);
+  assert.ok(await evaluate(`!!document.querySelector('tr[data-user="alice"]')`), 'joined contestants stay visible');
+  await evaluate(`document.querySelector('[data-show-absent]').click()`);
+  await wait(`!!document.querySelector('tr[data-user="dora"]')`);
+  app.ctx.data.users = app.ctx.data.users.filter(item => item !== dora);
+  delete contest.extraMinutes[user.id]; delete contest.extraMinutes[dora.id];
+  await evaluate('route()');
+  console.log('PASS extra-time controls set values directly, in bulk, and the board can hide absent contestants');
 
   await evaluate(`adminSource({id:${contestId}},{id:${user.id},username:'alice'},{name:'new-alpha'})`);
   await copyFromViewer('modern');

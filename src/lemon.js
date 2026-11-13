@@ -38,7 +38,8 @@ export class LemonClient {
     if (!cfg.url || !cfg.apiKey) throw new LemonError(400, cfg.url ? '请填写 API Key' : '请填写 LemonServer 地址');
     let url = normalizeUrl(cfg.url) + p;
     if (query) url += '?' + new URLSearchParams(query).toString();
-    const headers = { Authorization: 'Bearer ' + cfg.apiKey };
+    // LemonServer 0.1.13+ only shows this server the contestants it uploaded (see LemonLink.claimAll)
+    const headers = { Authorization: 'Bearer ' + cfg.apiKey, 'X-CodeHub-Instance': this.ctx.data.instanceId };
     let body;
     if (json !== undefined) {
       headers['Content-Type'] = 'application/json';
@@ -73,8 +74,32 @@ export class LemonLink {
   }
 
   start() {
+    // Contests linked by an older CodeHub: claim their contestants on LemonServer once.
+    for (const c of this.ctx.data.contests)
+      if (this.linked(c) && this.state(c).claimedBy !== this.ctx.data.instanceId) this.claimAll(c);
     this.timer = setInterval(() => this.tick().catch((e) => this.ctx.log('lemon tick:', e.message)), 5000);
     this.timer.unref?.();
+  }
+
+  // Creating a contestant's folder makes them ours on LemonServer: several CodeHub servers may share one
+  // LemonServer contest, and each one only receives the results of its own contestants.
+  claimAll(c) {
+    const pending = this.pendingOf(c);
+    for (const user of this.ctx.data.users)
+      if (user.role !== 'admin' && joinedAt(this.ctx.data, c, user.id)) pending[user.id + '|'] = Date.now() + Math.random();
+    this.state(c).claimedBy = this.ctx.data.instanceId;
+    this.ctx.store.save();
+  }
+
+  // Contestants whose folder belongs to another CodeHub server on LemonServer (same account name).
+  conflictsOf(c) { return this.state(c).conflicts || []; }
+
+  setConflict(c, username, conflict) {
+    const st = this.state(c), list = new Set(st.conflicts || []);
+    if (conflict === list.has(username)) return;
+    if (conflict) list.add(username); else list.delete(username);
+    st.conflicts = [...list].sort();
+    this.ctx.store.save();
   }
 
   rt(c) {
@@ -157,7 +182,9 @@ export class LemonLink {
           await this.client.call('POST', this.cpath(c) + '/files/mkdir', { json: { root: 'source', path: user.username } });
           if (pending[key] === version) delete pending[key];
           rt.uploadError = null;
+          this.setConflict(c, user.username, false);
         } catch (e) {
+          if (e.body?.ownedByOther) { delete pending[key]; this.setConflict(c, user.username, true); continue; }
           rt.uploadError = e.message; rt.uploadErrorAt = Date.now(); this.ctx.store.save(); return false;
         }
         continue;
@@ -175,7 +202,10 @@ export class LemonLink {
         });
         if (pending[key] === version) delete pending[key];
         rt.uploadError = null;
+        this.setConflict(c, user.username, false);
       } catch (e) {
+        // another CodeHub server uses this account name in the same LemonServer contest: never overwrite it
+        if (e.body?.ownedByOther) { delete pending[key]; this.setConflict(c, user.username, true); continue; }
         rt.uploadError = e.message;
         rt.uploadErrorAt = Date.now();
         this.ctx.store.save();
@@ -194,6 +224,8 @@ export class LemonLink {
     st.finalDone = false;
     st.linkedAt = Date.now();
     st.slotBase = null;
+    st.claimedBy = this.ctx.data.instanceId;
+    st.conflicts = [];
     const rt = this.rt(c);
     rt.remote = null;
     rt.needTasks = true;
@@ -279,7 +311,8 @@ export class LemonLink {
       }
       // LemonServer judges the jobs of all contests one after another. If this contest still has a job
       // there (ours, or one started on LemonServer), the previous run is not finished: skip this one.
-      const mine = (j) => !!j && j.contest === c.lemon.contest;
+      // Jobs of other CodeHub servers sharing the contest only judge their own contestants (0.1.13+).
+      const mine = (j) => !!j && j.contest === c.lemon.contest && (!j.owner || j.owner === this.ctx.data.instanceId);
       const q = await this.client.call('GET', '/api/judge-queue');
       if (mine(q.running) || (q.queue || []).some(mine)) return finish('skipped', '上一次评测尚未完成');
       let job;
@@ -393,6 +426,7 @@ export class LemonLink {
       history: rt.history.slice(0, 5),
       pendingUploads: Object.keys(this.pendingOf(c)).length,
       uploadError: rt.uploadError || null,
+      conflicts: this.conflictsOf(c),
       finalDone: !!st.finalDone,
     };
   }

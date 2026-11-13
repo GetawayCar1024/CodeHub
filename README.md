@@ -2,7 +2,7 @@
 
 信息学竞赛程序回收系统：选手在浏览器中提交源代码，管理员管理用户与比赛，可与 [LemonServer](https://github.com/GetawayCar1024/LemonServer) 联动评测。
 
-版本 0.1.12 · Node.js ≥ 22.2，无第三方依赖。
+版本 0.1.13 · Node.js ≥ 22.2，无第三方依赖。
 
 ## 安装
 
@@ -41,13 +41,14 @@ Windows 下也可以双击 `start.bat`。
 
 **管理员**
 
-- 用户：批量导入（`用户名,密码[,真实姓名[,分组;分组]]`，真实姓名为空则同用户名；已存在的用户可跳过或覆盖）、编辑姓名 / 密码 / 分组、批量加入或移出分组、删除、导出 CSV / TSV / TXT / JSON。选中了用户则导出所选，否则导出当前分组；“全部分组”导出全部用户，不受搜索框过滤影响。导出不含密码或密码哈希。
+- 用户：批量导入（`用户名,密码[,真实姓名[,分组;分组]]`，真实姓名为空则同用户名；已存在的用户可跳过或覆盖；首行可为表头，按列名识别，支持带引号的 CSV 与制表符分隔）、编辑姓名 / 密码 / 分组、批量加入或移出分组、删除、导出 CSV / TSV / TXT / JSON。选中了用户则导出所选，否则导出当前分组；“全部分组”导出全部用户，不受搜索框过滤影响。导出与导入的列相同，可直接再导入；导出不含密码或密码哈希（密码列为空），导入时密码为空则覆盖已有用户保留原密码，新用户须填写密码。
 - 分组：新建、重命名、删除。
 - 比赛：比赛名（即文件夹名）、标题、开始与结束时间（必填）、提前进入时间（默认 30 分钟）、严格模式（默认开启）、题目列表、可参加的分组（不选则所有用户）、down.zip 与解压密码及各自公开时间（可提前准备）、是否启用子文件夹。
-- 提交概况：每名选手每道题的代码长度；关联 LemonServer 后还显示是否已评测、得分与总分，并提供评测结果链接。比赛中与赛后看到的一样，随时可查看代码、下载全部代码（zip）。“提前结束”一列显示选手结束比赛的时间，可撤销（选手误点时恢复提交）。
+- 提交概况：每名选手每道题的代码长度；关联 LemonServer 后还显示是否已评测、得分与总分，并提供评测结果链接。比赛中与赛后看到的一样，随时可查看代码、下载全部代码（zip）。“提前结束”一列显示选手结束比赛的时间，可撤销（选手误点时恢复提交）。“显示未参加的选手”默认勾选，取消后只列出已确认参加的选手。
 - 结果表格：点击表头按账号、姓名、总分或单题分数排序（▲ 升序，▼ 降序），未评测项置后；点击格子查看代码。
 - 编辑比赛时拖动题目左侧的手柄，整行随指针移动，可跨多题调整顺序，Esc 取消；聚焦手柄后也可用 ↑↓ 键。
-- 结果表的“延时”可为尚未结束的选手增加时间，支持多次累计；已手动结束或已到个人截止时间的选手不能延时。评测策略不变，比赛整体结束时间按最后一名选手的结束时间计算。
+- 结果表的“延时”直接设置尚未结束的选手的总延时（0–10080 分钟，不是在原值上增加），可以减少，但减少后的结束时间必须晚于当前时间；勾选多名选手可一次设置，任一选手不满足条件则全部不修改。已手动结束或已到个人截止时间的选手不能修改延时。评测策略不变，比赛整体结束时间按最后一名选手的结束时间计算。
+- 严格模式下，确认参加后即使比赛尚未开始，在提前结束或个人截止时间之前也不能查看已结束的比赛；正在进行或即将进行的比赛不受影响。
 - 普通用户可按原界面查看有权限的历史比赛、下载题包、查看密码与自己的代码，结束后提交按钮禁用；若关联 LemonServer 的比赛已公开，还可打开其结果页。
 - 设置：站点名称、代码长度上限、存储位置、考生手册、LemonServer 接入、管理员密码。
 - 浅色 / 深色 / 跟随系统。
@@ -101,6 +102,8 @@ API：比赛设置提供 `downZipReleaseMinutes` 和 `passwordReleaseMinutes`。
 - 一次“任务”= 上传未同步的代码 → 在 LemonServer 的评测队列中加入“评测**未评测**的代码”（开始时先刷新选手）→ 等待它完成。该比赛上一次的评测还没完成（包括在 LemonServer 上手动发起的）时，本次跳过；LemonServer 正在评测其他比赛时，本次排队等待。需要 LemonServer ≥ 0.1.6。
 - 比赛结束后，等最后一次任务结束，再执行一次任务评测未评测的代码。
 - 比赛时间只在 CodeHub 中设置（LemonServer 没有比赛时间，成绩与评测详情任何时候都能看到）：它决定选手何时能进入和提交、定时评测从何时算起、何时执行赛后评测。
+- 已存档的 LemonServer 比赛不能修改或评测，因此不会出现在“关联比赛”和“从 LemonServer 导入”中，也不能关联；关联之后才存档的比赛保持原关联。
+- 多个 CodeHub（例如不同机房）可以关联同一场 LemonServer 比赛。每个 CodeHub 有自己的实例标识（保存在 `codehub.json`），LemonServer ≥ 0.1.13 据此只向它返回、只为它评测它自己的选手。账号与另一个 CodeHub 重名时不会上传或覆盖，提交概况会列出这些账号；在 LemonServer 上删除该选手后可以重新同步。从旧版 CodeHub 升级时会自动为已关联的比赛登记一次选手。
 
 ### 修改题目文件名
 
@@ -116,7 +119,9 @@ API：`PUT /api/admin/contests/{id}` 的 `problems` 项可带 `previousName` 指
 node tests/smoke.mjs                                          # 只测 CodeHub
 node --test tests/problem-rename.mjs                          # 改名、冲突、回滚及同步
 node --test tests/material-release.mjs                        # 试题包／密码公开时间与权限
-node --test tests/participation.mjs                           # 参赛确认、严格模式、导出和旧数据兼容
+node --test tests/participation.mjs                           # 参赛确认、严格模式、导出／再导入和旧数据兼容
+node --test tests/extensions.mjs                              # 个人延时（直接设置、减少、批量）与历史比赛
+node --test tests/lemon-sharing.mjs                           # 已存档比赛不能关联、多个 CodeHub 共用比赛
 node tests/login-layout.mjs                                  # 浏览器界面回归（需要 Chromium / CHROME_BIN）
 node tests/smoke.mjs http://127.0.0.1:18080 D:\tmp\contests   # 连同 LemonServer（新配置、令牌 123456、需要 g++）
 ```
@@ -128,7 +133,7 @@ node tests/smoke.mjs http://127.0.0.1:18080 D:\tmp\contests   # 连同 LemonServ
 - `src/lemon.js`：LemonServer 客户端与联动调度（上传、评测任务）。
 - `src/contest-edit.js`：比赛／题目改名，提交记录迁移和失败回滚。
 - `src/contest-materials.js`：试题包／密码的公开时间与选手可见状态。
-- `src/contest-time.js`：个人延时、截止时间与参赛范围；管理员通过 `PUT /api/admin/contests/:id/extensions/:uid` 设置累计 `minutes`，界面每次延时会在原累计值上增加。
+- `src/contest-time.js`：个人延时、截止时间与参赛范围；管理员通过 `PUT /api/admin/contests/:id/extensions/:uid` `{"minutes"}` 设置总延时，或 `POST /api/admin/contests/:id/extensions` `{"ids":[...],"minutes"}` 批量设置（全部成功或全部不改）。
 - `src/store.js`：JSON 数据文件；`src/zip.js`：打包下载。
 - `public/`：网页前端（原生 JS，无需构建）。
 - `packaging/`：发布包（`node packaging/package.mjs windows|linux`，`packaging/linux/build-deb.sh`）；推送 `v*` 标签后由 GitHub Actions 构建并发布。

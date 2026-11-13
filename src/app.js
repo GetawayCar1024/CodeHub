@@ -53,6 +53,9 @@ const MIME = {
 export function createApp({ dataDir, resetAdmin = false, log = console.log }) {
   const store = new Store(path.join(dataDir, 'codehub.json'));
   const data = store.load(DEFAULTS);
+  // Identifies this server to LemonServer, which keeps the contestants of several CodeHub servers
+  // linked to one contest apart.
+  if (typeof data.instanceId !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(data.instanceId)) data.instanceId = randomToken(18);
   for (const c of data.contests) for (const uid of new Set([
     ...Object.keys(data.submissions[c.id] || {}), ...Object.keys(data.finished[c.id] || {}),
   ])) {

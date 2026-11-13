@@ -102,17 +102,43 @@ test('past contests retain only the caller’s materials and code, with a result
 
 test('extra time validates participants and writes atomically', async t => fixture(t, async ({ app, admin, alice, uid, base }) => {
   await alice('PUT', base + '/extensions/' + uid, { minutes: 10 }, 403);
-  for (const minutes of [0, -1, 1.5, 10081, true, '5', null]) await admin('PUT', base + '/extensions/' + uid, { minutes }, 400);
+  for (const minutes of [-1, 1.5, 10081, true, '5', null]) await admin('PUT', base + '/extensions/' + uid, { minutes }, 400);
   await admin('PUT', base + '/extensions/1', { minutes: 10 }, 404);
   const outsiderId = app.ctx.data.users.find(user => user.username === 'outsider').id;
   await admin('PUT', base + '/extensions/' + outsiderId, { minutes: 10 }, 400);
   await admin('PUT', base + '/extensions/' + uid, { minutes: 5 });
-  await admin('PUT', base + '/extensions/' + uid, { minutes: 3 }, 400);
+  assert.equal((await admin('PUT', base + '/extensions/' + uid, { minutes: 3 })).minutes, 3, 'the value replaces the previous one and may be smaller');
+  await admin('PUT', base + '/extensions/' + uid, { minutes: 5 });
   const rename = fs.renameSync;
   t.mock.method(fs, 'renameSync', (from, to) => { if (to === app.ctx.store.file) throw Error('injected disk failure'); return rename(from, to); });
   await admin('PUT', base + '/extensions/' + uid, { minutes: 12 }, 500);
   assert.equal(app.ctx.contest(1).extraMinutes[uid], 5);
   t.mock.restoreAll();
+}));
+
+test('extra time is set directly, may be reduced only to a future deadline, and can be set for several contestants at once', async t => fixture(t, async ({ app, admin, alice, bob, c, uid, end, clock, base, publicBase }) => {
+  const bobId = app.ctx.data.users.find(user => user.username === 'bob').id;
+  await bob('POST', publicBase + '/join', { confirm: true, strict: true });
+  const batch = await admin('POST', base + '/extensions', { ids: [uid, bobId], minutes: 20 });
+  assert.deepEqual(batch.users.map(user => [user.id, user.minutes, user.endTime]), [[uid, 20, end + 20 * 60000], [bobId, 20, end + 20 * 60000]]);
+  await admin('PUT', base + '/extensions/' + uid, { minutes: 20 });
+  assert.equal(c.extraMinutes[uid], 20, 'setting the same value again does not add to it');
+  clock(end + 10 * 60000);
+  await admin('PUT', base + '/extensions/' + uid, { minutes: 10 }, 400);
+  await admin('POST', base + '/extensions', { ids: [uid, bobId], minutes: 5 }, 400);
+  assert.deepEqual([c.extraMinutes[uid], c.extraMinutes[bobId]], [20, 20], 'a rejected batch changes nobody');
+  await admin('POST', base + '/extensions', { ids: [uid, bobId], minutes: 11 });
+  assert.equal((await alice('GET', publicBase)).endTime, end + 11 * 60000);
+  await admin('PUT', base + '/extensions/' + bobId, { minutes: 30 });
+  await alice('POST', publicBase + '/finish');
+  await admin('POST', base + '/extensions', { ids: [uid, bobId], minutes: 40 }, 409);
+  assert.equal(c.extraMinutes[bobId], 30);
+  for (const ids of [[], 'x', [99999]]) await admin('POST', base + '/extensions', { ids, minutes: 5 }, Array.isArray(ids) && ids.length ? 404 : 400);
+  await alice('POST', base + '/extensions', { ids: [uid], minutes: 5 }, 403);
+  clock(end + 12 * 60000);
+  await admin('PUT', base + '/extensions/' + bobId, { minutes: 0 }, 400);
+  await admin('PUT', base + '/extensions/' + bobId, { minutes: 15 });
+  assert.equal(c.endTime, end);
 }));
 
 test('the original judging policy runs until the final contestant deadline, then judges only unjudged code', async t => fixture(t, async ({ app, admin, c, uid, start, end, clock, base }) => {

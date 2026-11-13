@@ -985,6 +985,8 @@ const TASK_STATE = { running: '准备中', queued: '排队中', judging: '评测
 async function renderBoard(id) {
   let b = await api('GET', `/api/admin/contests/${id}/board`);
   let order = { key: 'username', direction: 1 };
+  let showAbsent = true; // contestants who have not confirmed entry
+  const picked = new Set(); // contestants selected for extra time
   const main = shell('contests');
   const body = h('div');
   main.appendChild(body);
@@ -993,9 +995,13 @@ async function renderBoard(id) {
     const c = b.contest;
     const L = b.lemon;
     const scored = L.linked && L.reachable;
-    const finished = b.rows.filter((r) => r.finishedAt).length;
+    const visibleRows = showAbsent ? b.rows : b.rows.filter((r) => r.joinedAt);
+    for (const uid of [...picked]) if (!visibleRows.some((r) => r.id === uid && r.canExtend)) picked.delete(uid);
+    const extendable = visibleRows.filter((r) => r.canExtend);
+    const absent = b.rows.length - b.rows.filter((r) => r.joinedAt).length;
+    const finished = visibleRows.filter((r) => r.finishedAt).length;
     let submitted = 0, judged = 0;
-    for (const r of b.rows) for (const cell of Object.values(r.cells)) { submitted++; if (cell.judged) judged++; }
+    for (const r of visibleRows) for (const cell of Object.values(r.cells)) { submitted++; if (cell.judged) judged++; }
 
     const lemonCard = L.linked ? h('div', { class: 'card', style: { marginBottom: '16px' } },
       h('div', { class: 'status-line' },
@@ -1012,12 +1018,13 @@ async function renderBoard(id) {
         h('button', { class: 'small', onclick: () => act('resync') }, '重新同步'),
         h('a', { class: 'btn small primary', href: L.link, target: '_blank' }, '评测结果 ↗')),
       [L.uploadError && `上传失败：${L.uploadError}`,
-        b.missingTasks.length && `LemonServer 中缺少试题：${b.missingTasks.join('、')}`]
+        b.missingTasks.length && `LemonServer 中缺少试题：${b.missingTasks.join('、')}`,
+        L.conflicts?.length && `以下账号在该 LemonServer 比赛中已由另一个 CodeHub 使用，未上传、也不显示成绩：${L.conflicts.join('、')}`]
         .filter(Boolean).map((t) => h('div', { class: 'danger-text small', style: { marginTop: '6px' } }, t))) : null;
 
     // the result on LemonServer: score, or the compile state (NS, CE, …) when compiling failed
     const COMPILE = ['', 'NS', 'CE', 'CTLE', 'IC', 'NG'];
-    const rows = CodeHubBoardSort.sort(b.rows, order.key, order.direction);
+    const rows = CodeHubBoardSort.sort(visibleRows, order.key, order.direction);
     // Luogu-style indicator: both grey triangles when unsorted, only the up (ascending) or down one when sorted.
     const sortHeader = (label, key, attrs = {}) => {
       const disabled = key !== 'username' && key !== 'realName' && !scored;
@@ -1033,14 +1040,22 @@ async function renderBoard(id) {
       const cls = s.compileState ? 'bad' : full && s.score >= full ? 'full' : s.score > 0 ? 'part' : 'zero';
       return h('span', { class: 'cell-score ' + cls }, s.compileState ? `0 ${COMPILE[s.compileState] || ''}` : s.score);
     };
+    const allPicked = extendable.length > 0 && extendable.every((r) => picked.has(r.id));
     const table = h('table', { class: 'list' },
-      h('thead', null, h('tr', null, sortHeader('账号', 'username'), sortHeader('姓名', 'realName'),
+      h('thead', null, h('tr', null,
+        h('th', { class: 'pick' }, h('input', { type: 'checkbox', 'data-pick-all': true, 'aria-label': '选择全部可延时的选手', title: '选择全部可延时的选手',
+          checked: allPicked, disabled: !extendable.length,
+          onchange: (e) => { extendable.forEach((r) => (e.target.checked ? picked.add(r.id) : picked.delete(r.id))); render(); } })),
+        sortHeader('账号', 'username'), sortHeader('姓名', 'realName'),
         c.problems.map((p) => sortHeader(p.title !== p.name ? `${p.title} (${p.name})` : p.name, 'problem:' + p.name, { class: 'cell' })),
         scored ? sortHeader('总分', 'total', { class: 'cell' }) : null,
         h('th', { class: 'cell' }, '已提交'),
         h('th', { class: 'cell' }, '提前结束'), h('th', { class: 'cell' }, '延时'))),
-      h('tbody', null, rows.map((r) => h('tr', { 'data-user': r.username },
-        h('td', { class: 'mono' }, r.username), h('td', null, r.realName),
+      h('tbody', null, rows.map((r) => h('tr', { 'data-user': r.username, class: r.joinedAt ? '' : 'absent' },
+        h('td', { class: 'pick' }, h('input', { type: 'checkbox', 'data-pick': r.id, 'aria-label': '选择 ' + r.username,
+          checked: picked.has(r.id), disabled: !r.canExtend, title: r.canExtend ? '' : '已结束比赛，不能修改延时',
+          onchange: (e) => { e.target.checked ? picked.add(r.id) : picked.delete(r.id); render(); } })),
+        h('td', { class: 'mono' }, r.username, r.joinedAt ? null : h('span', { class: 'muted small', title: '尚未确认参加' }, ' 未参加')), h('td', null, r.realName),
         c.problems.map((p) => {
           const s = r.cells[p.name];
           const attrs = { 'data-cell': r.id + '|' + p.name };
@@ -1058,9 +1073,11 @@ async function renderBoard(id) {
         h('td', { class: 'cell muted' }, `${Object.keys(r.cells).length} / ${c.problems.length}`),
         h('td', { class: 'cell' }, r.finishedAt ? [h('span', { title: fmtTime(r.finishedAt) }, fmtTime(r.finishedAt, false).slice(6)),
           h('a', { class: 'undo-link', title: '允许该选手继续提交', onclick: () => undoFinish(r) }, '撤销')] : h('span', { class: 'muted' }, '—')),
-        h('td', { class: 'cell' }, h('button', { class: 'small', 'data-extend': r.id, disabled: r.canExtend === false, onclick: () => extendUser(r) }, r.extraMinutes ? `+${r.extraMinutes} 分钟` : '延时'),
+        h('td', { class: 'cell' }, h('button', { class: 'small', 'data-extend': r.id, disabled: r.canExtend === false, onclick: () => extendUsers([r]) }, r.extraMinutes ? `+${r.extraMinutes} 分钟` : '延时'),
           r.extraMinutes ? h('div', { class: 'muted small', title: fmtTime(r.endTime) }, fmtTime(r.endTime, false)) : null)))));
 
+    const absentToggle = h('label', { class: 'check' }, h('input', { type: 'checkbox', 'data-show-absent': true, checked: showAbsent,
+      onchange: (e) => { showAbsent = e.target.checked; render(); } }), `显示未参加的选手（${absent}）`);
     put(body,
       h('div', { class: 'page-head' },
         h('h2', null, c.title),
@@ -1070,9 +1087,13 @@ async function renderBoard(id) {
           submitted ? h('a', { class: 'btn', href: `/api/admin/contests/${c.id}/archive.zip` }, '下载全部代码') : null,
           h('button', { onclick: () => go(`#/admin/c/${c.id}/edit`) }, '编辑'))),
       lemonCard,
-      b.rows.length ? h('div', { class: 'table-wrap' }, table) : h('div', { class: 'card empty' }, '没有可参赛的用户'),
+      h('div', { class: 'toolbar board-tools' }, absentToggle, h('div', { class: 'grow' }),
+        picked.size ? h('div', { class: 'bulkbar' }, h('span', null, `已选 ${picked.size} 人`),
+          h('button', { class: 'small', 'data-extend-selected': true, onclick: () => extendUsers(b.rows.filter((r) => picked.has(r.id))) }, '设置延时'),
+          h('button', { class: 'small plain', onclick: () => { picked.clear(); render(); } }, '取消选择')) : null),
+      visibleRows.length ? h('div', { class: 'table-wrap' }, table) : h('div', { class: 'card empty' }, b.rows.length ? '没有已参加的选手' : '没有可参赛的用户'),
       h('div', { class: 'section-foot' },
-        `${b.rows.length} 名选手 · 提交 ${submitted}` + (scored ? ` · 已评测 ${judged}` : '') + (finished ? ` · 提前结束 ${finished}` : '') + (submitted ? ' · 点击查看代码' : '')));
+        `${visibleRows.length} 名选手 · 提交 ${submitted}` + (scored ? ` · 已评测 ${judged}` : '') + (finished ? ` · 提前结束 ${finished}` : '') + (submitted ? ' · 点击查看代码' : '')));
   };
 
   const reload = async () => {
@@ -1093,16 +1114,38 @@ async function renderBoard(id) {
     } catch (e) { fail(e); }
   };
 
-  const extendUser = (r) => {
-    const minutes = h('input', { type: 'number', min: 1, max: 10080 - (r.extraMinutes || 0), step: 1, value: 5, 'aria-label': '本次延时分钟数' });
-    modal(`为 ${r.username} 延时`, h('div', { class: 'stack' },
-      h('label', null, '本次增加的分钟数', minutes),
-      h('div', { class: 'muted small' }, `当前结束：${fmtTime(r.endTime)}；已累计延时 ${r.extraMinutes || 0} 分钟。`)), [
+  // Sets the total extra time (replacing the previous value, so it may also be reduced).
+  const extendUsers = (list) => {
+    if (!list.length) return;
+    const c = b.contest, one = list.length === 1 ? list[0] : null;
+    const current = [...new Set(list.map((r) => r.extraMinutes || 0))];
+    const minutes = h('input', { type: 'number', min: 0, max: 10080, step: 1, value: current.length === 1 ? current[0] : '', 'aria-label': '延时分钟数' });
+    const preview = h('div', { class: 'muted small' });
+    const update = () => {
+      const value = Number(minutes.value);
+      if (minutes.value === '' || !Number.isInteger(value) || value < 0 || value > 10080) { preview.textContent = '请输入 0–10080 的整数分钟，0 表示不延时'; return; }
+      const end = c.endTime + value * 60000;
+      const early = list.filter((r) => value < (r.extraMinutes || 0) && end <= now());
+      preview.textContent = `结束时间改为 ${fmtTime(end)}` + (early.length ? `；${early.map((r) => r.username).join('、')} 缩短后将早于当前时间，不能保存` : '');
+    };
+    minutes.addEventListener('input', update);
+    update();
+    modal(one ? `为 ${one.username} 设置延时` : `为 ${list.length} 名选手设置延时`, h('div', { class: 'stack' },
+      h('label', null, '延时（分钟）', minutes),
+      h('div', { class: 'muted small' }, one
+        ? `当前延时 ${one.extraMinutes || 0} 分钟，结束于 ${fmtTime(one.endTime)}。`
+        : `当前延时：${current.length === 1 ? current[0] + ' 分钟' : current.sort((x, y) => x - y).join('、') + ' 分钟不等'}。`),
+      preview,
+      h('div', { class: 'muted small' }, '直接设为该值（不是在原有基础上增加），可以减少；减少后的结束时间须晚于当前时间。')), [
       { label: '取消' }, { label: '保存延时', primary: true, onClick: async () => {
         const value = Number(minutes.value);
-        if (!Number.isInteger(value) || value < 1 || value + (r.extraMinutes || 0) > 10080) { toast('请输入正整数分钟，累计最多 10080 分钟', true); return false; }
-        await api('PUT', `/api/admin/contests/${id}/extensions/${r.id}`, { minutes: value + (r.extraMinutes || 0) });
+        if (minutes.value === '' || !Number.isInteger(value) || value < 0 || value > 10080) { toast('请输入 0–10080 的整数分钟', true); return false; }
+        if (one) await api('PUT', `/api/admin/contests/${id}/extensions/${one.id}`, { minutes: value });
+        else await api('POST', `/api/admin/contests/${id}/extensions`, { ids: list.map((r) => r.id), minutes: value });
+        for (const r of list) picked.delete(r.id);
+        toast('已保存延时');
         await reload();
+        render();
       } },
     ]);
   };
@@ -1265,7 +1308,7 @@ async function renderUsers() {
     const gp = groupPicker([]);
     const errBox = h('div', { class: 'err-list' });
     modal('导入用户', h('div', { class: 'stack' },
-      h('div', { class: 'flex' }, h('span', { class: 'muted small grow' }, '每行：用户名,密码[,姓名[,分组;分组]]，姓名为空则同用户名'), fileBtn),
+      h('div', { class: 'flex' }, h('span', { class: 'muted small grow' }, '每行：用户名,密码[,姓名[,分组;分组]]，姓名为空则同用户名。导出的文件可直接导入：密码为空时，已有用户“覆盖”会保留原密码，新用户须填写'), fileBtn),
       text,
       h('div', { class: 'flex' }, h('span', { class: 'muted', style: { width: '70px' } }, '已存在'), segmented([['skip', '跳过'], ['overwrite', '覆盖']], mode, (v) => { mode = v; })),
       h('div', { class: 'flex' }, h('span', { class: 'muted', style: { width: '70px' } }, '加入分组'), gp.el),

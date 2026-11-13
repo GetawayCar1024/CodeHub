@@ -10,7 +10,7 @@ import { commitContestEdit } from './contest-edit.js';
 import { materialTiming } from './contest-materials.js';
 import { contestantEnd, extraMinutes, lastEnd } from './contest-time.js';
 import { joinedAt } from './participation.js';
-import { exportUsers } from './user-export.js';
+import { exportUsers, parseUserRows } from './user-export.js';
 
 const MAX_UPLOAD = 1024 * 1024 * 1024;
 const collator = new Intl.Collator('zh-CN', { numeric: true });
@@ -153,9 +153,10 @@ export function setupAdminRoutes(router, ctx) {
   });
 
 
+  // Archived LemonServer contests are read-only (no uploads or judging): they cannot be linked.
   route('GET', '/api/admin/lemon/contests', async () => {
     const list = await lemonCall('GET', '/api/contests');
-    return list.contests.map((x) => ({ name: x.name, title: x.title, tasks: x.tasks }));
+    return list.contests.filter((x) => !x.archived).map((x) => ({ name: x.name, title: x.title, tasks: x.tasks }));
   });
 
   route('POST', '/api/admin/lemon/contests', async (req) => {
@@ -176,11 +177,12 @@ export function setupAdminRoutes(router, ctx) {
     };
   });
 
-  // Before linking a contest to another LemonServer contest: it must exist.
+  // Before linking a contest to another LemonServer contest: it must exist and must not be archived.
   const checkLemonLink = async (c, body) => {
     const name = String(body.lemon?.contest ?? '').trim();
     if (!('lemon' in body) || !name || name === (c?.lemon?.contest || '') || !ctx.lemon.client.configured()) return;
-    await lemonCall('GET', ctx.lemon.client.contestPath(name));
+    const remote = await lemonCall('GET', ctx.lemon.client.contestPath(name));
+    if (remote?.archived) fail(409, `LemonServer 比赛“${name}”已存档，不能关联`);
   };
 
   // ------------------------------------------------------------------ groups
@@ -231,27 +233,25 @@ export function setupAdminRoutes(router, ctx) {
   route('GET', '/api/admin/users', () =>
     data.users.filter((u) => u.role !== 'admin').sort((a, b) => collator.compare(a.username, b.username)).map(userJson));
 
-  // Lines of "username,password[,real name[,group;group]]" (comma or tab separated).
+  // Lines of "username,password[,real name[,group;group]]" (CSV with quotes, or tab separated), optionally
+  // with a header row naming the columns, as in the exported files. An empty password keeps the password
+  // of an existing user; new users need one.
   route('POST', '/api/admin/users/import', async (req) => {
     const body = await readJson(req, 16 << 20);
     const overwrite = body.mode === 'overwrite';
     const extraGroups = body.groups ? groupIds(body.groups) : [];
-    const lines = String(body.text || '').replace(/^\uFEFF/, '').split(/\r?\n/);
     const errors = [];
     const rows = [];
     const seen = new Set();
-    lines.forEach((line, i) => {
-      if (!line.trim()) return;
-      const cells = line.split(/\t|,|，/).map((x) => x.trim().replace(/^"(.*)"$/, '$1'));
-      const [username, password, realName = '', groupText = ''] = cells;
-      if (i === 0 && /^(用户名|账号|username)$/i.test(username)) return;
-      const err = (m) => errors.push({ line: i + 1, message: m });
-      if (!isValidName(username)) return err('用户名无效');
-      if (!password) return err('密码为空');
-      if (seen.has(username.toLowerCase())) return err('用户名重复');
-      seen.add(username.toLowerCase());
-      rows.push({ username, password, realName: realName || username, groups: groupText.split(/[;；|]/).map((x) => x.trim()).filter(Boolean) });
-    });
+    for (const r of parseUserRows(body.text)) {
+      const err = (m) => errors.push({ line: r.line, message: m });
+      if (!isValidName(r.username)) { err('用户名无效'); continue; }
+      const existing = data.users.find((u) => sameName(u.username, r.username));
+      if (!r.password && !existing) { err('密码为空（新用户须填写密码）'); continue; }
+      if (seen.has(r.username.toLowerCase())) { err('用户名重复'); continue; }
+      seen.add(r.username.toLowerCase());
+      rows.push({ ...r, realName: r.realName || r.username });
+    }
     if (errors.length) return { added: 0, updated: 0, skipped: 0, errors };
 
     let added = 0, updated = 0, skipped = 0;
@@ -274,15 +274,16 @@ export function setupAdminRoutes(router, ctx) {
         skipped++;
         continue;
       }
-      const passwordHash = hashPassword(r.password);
       if (existing) {
-        existing.passwordHash = passwordHash;
         existing.realName = r.realName;
         existing.groups = [...new Set([...(existing.groups || []), ...gids])];
-        ctx.dropUserSessions(existing.id);
+        if (r.password) {
+          existing.passwordHash = hashPassword(r.password);
+          ctx.dropUserSessions(existing.id);
+        }
         updated++;
       } else {
-        data.users.push({ id: ctx.newId('user'), username: r.username, realName: r.realName, role: 'user', groups: gids, passwordHash, createdAt: Date.now() });
+        data.users.push({ id: ctx.newId('user'), username: r.username, realName: r.realName, role: 'user', groups: gids, passwordHash: hashPassword(r.password), createdAt: Date.now() });
         added++;
       }
     }
@@ -582,27 +583,52 @@ export function setupAdminRoutes(router, ctx) {
     };
   });
 
-  // Undo a contestant's early finish (e.g. a click by mistake): they can submit again.
+  // Extra time: `minutes` is the contestant's total extra time (it replaces the previous value, so it
+  // can also be reduced). A reduced deadline must still be in the future. All or none are changed.
+  const setExtraTime = (c, users, minutes) => {
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 10080) fail(400, '延时须为 0–10080 的整数分钟');
+    const now = Date.now(), changed = [];
+    for (const user of users) {
+      if (user.role === 'admin' || !allowedFor(c, user)) fail(400, `${user.username} 不能参加该比赛`);
+      if (data.finished[c.id]?.[user.id] || now >= contestantEnd(c, user.id)) fail(409, `${user.username} 已结束比赛，不能再修改延时`);
+      if (minutes === extraMinutes(c, user.id)) continue;
+      if (minutes < extraMinutes(c, user.id) && c.endTime + minutes * 60000 <= now)
+        fail(400, `${user.username} 缩短后的结束时间须晚于当前时间`);
+      changed.push(user);
+    }
+    if (changed.length) {
+      const previous = c.extraMinutes, oldState = data.lemonState[c.id] ? structuredClone(data.lemonState[c.id]) : undefined;
+      c.extraMinutes = { ...(previous || {}) };
+      for (const user of changed) {
+        if (minutes) c.extraMinutes[user.id] = minutes; else delete c.extraMinutes[user.id];
+      }
+      ctx.lemon.timesChanged(c);
+      try { ctx.store.flush(); }
+      catch (error) {
+        if (previous === undefined) delete c.extraMinutes; else c.extraMinutes = previous;
+        if (oldState === undefined) delete data.lemonState[c.id]; else data.lemonState[c.id] = oldState;
+        throw error;
+      }
+      ctx.log('contest extra time:', c.name, changed.map((u) => u.username).join(','), minutes, 'minutes');
+    }
+    return users.map((user) => ({ id: user.id, minutes: extraMinutes(c, user.id), endTime: contestantEnd(c, user.id) }));
+  };
+
   route('PUT', '/api/admin/contests/:id/extensions/:uid', async (req, res, p) => {
     const c = getContest(p.id), user = getUser(p.uid), body = await readJson(req);
-    if (user.role === 'admin' || !allowedFor(c, user)) fail(400, '请选择可参加该比赛的选手');
-    if (!Number.isInteger(body.minutes) || body.minutes < 1 || body.minutes > 10080) fail(400, '累计延时须为 1–10080 的整数分钟');
-    if (data.finished[c.id]?.[user.id] || Date.now() >= contestantEnd(c, user.id)) fail(409, '该选手已结束比赛，不能再延时');
-    if (body.minutes < extraMinutes(c, user.id)) fail(400, '累计延时不能少于已有延时');
-    if (body.minutes === extraMinutes(c, user.id)) return { minutes: body.minutes, endTime: contestantEnd(c, user.id) };
-    const previous = c.extraMinutes, oldState = data.lemonState[c.id] ? structuredClone(data.lemonState[c.id]) : undefined;
-    c.extraMinutes = { ...(previous || {}) };
-    c.extraMinutes[user.id] = body.minutes;
-    ctx.lemon.timesChanged(c);
-    try { ctx.store.flush(); }
-    catch (error) {
-      if (previous === undefined) delete c.extraMinutes; else c.extraMinutes = previous;
-      if (oldState === undefined) delete data.lemonState[c.id]; else data.lemonState[c.id] = oldState;
-      throw error;
-    }
-    ctx.log('contest extra time:', c.name, user.username, body.minutes, 'minutes');
-    return { minutes: extraMinutes(c, user.id), endTime: contestantEnd(c, user.id) };
+    const [{ minutes, endTime }] = setExtraTime(c, [user], body.minutes);
+    return { minutes, endTime };
   });
+
+  // {ids: [user id, ...], minutes}
+  route('POST', '/api/admin/contests/:id/extensions', async (req, res, p) => {
+    const c = getContest(p.id), body = await readJson(req);
+    if (!Array.isArray(body.ids) || !body.ids.length || body.ids.length > 10000) fail(400, '请选择选手');
+    const users = [...new Set(body.ids.map(Number))].map(getUser);
+    return { users: setExtraTime(c, users, body.minutes) };
+  });
+
+  // Undo a contestant's early finish (e.g. a click by mistake): they can submit again.
 
   route('DELETE', '/api/admin/contests/:id/finished/:uid', (req, res, p) => {
     const c = getContest(p.id);
