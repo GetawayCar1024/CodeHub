@@ -322,7 +322,7 @@ try {
   assert.ok(zip.includes(Buffer.from('测试赛/SC-00002/aplusb.cpp')));
 
   step('rename contest moves the folder, password change');
-  await admin('PUT', '/api/admin/contests/' + A.id, { name: '测试赛2' });
+  Object.assign(A, await admin('PUT', '/api/admin/contests/' + A.id, { name: '测试赛2' }));
   assert.ok(fs.existsSync(path.join(dataDir, 'submissions', '测试赛2', 'SC-00001', 'aplusb.cpp')));
   if (LEMON) {
     step('renamed files re-sync; post-contest judging still uses only unjudged code');
