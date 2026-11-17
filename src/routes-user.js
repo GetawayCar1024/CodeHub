@@ -14,7 +14,7 @@ export function sortContests(list, now = Date.now()) {
   return list.slice().sort((a, b) => {
     const ea = now >= a.endTime, eb = now >= b.endTime;
     if (ea !== eb) return ea ? 1 : -1;
-    return (ea ? b.startTime - a.startTime : a.startTime - b.startTime) || a.id - b.id;
+    return (ea ? b.startTime - a.startTime : a.startTime - b.startTime) || String(a.id).localeCompare(String(b.id));
   });
 }
 
@@ -70,6 +70,7 @@ export function setupUserRoutes(router, ctx) {
     manual: !!data.settings.manual,
     serverTime: Date.now(),
     user: req.user ? { ...publicUser(req.user), defaultPassword: !!req.user.defaultPassword } : null,
+    ...(req.user?.role === 'admin' ? { storageError: ctx.store.lastError } : {}),
   }));
 
   router.post('/api/login', async (req, res) => {

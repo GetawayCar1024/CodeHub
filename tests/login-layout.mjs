@@ -268,7 +268,7 @@ try {
   await evaluate('route()');
   console.log('PASS extra-time controls set values directly, in bulk, and the board can hide absent contestants');
 
-  await evaluate(`adminSource({id:${contestId}},{id:${user.id},username:'alice'},{name:'new-alpha'})`);
+  await evaluate(`adminSource({id:${JSON.stringify(contestId)}},{id:${user.id},username:'alice'},{name:'new-alpha'})`);
   await copyFromViewer('modern');
   await copyFromViewer('denied');
   await evaluate(`document.querySelector('.overlay .modal-head button').click()`);
@@ -465,6 +465,27 @@ try {
   await evaluate(`location.hash='#/admin/c/${contestId}/edit'`); await wait('document.querySelectorAll(".prow").length===2');
   assert.equal(await evaluate(`(()=>{const row=[...document.querySelectorAll('.row')].find(row=>row.querySelector('.label')?.textContent==='子文件夹');return row.querySelector('input').disabled;})()`), false);
   console.log('PASS user export selection/group precedence, format picker and editable submission layout');
+  const strictInput = `([...document.querySelectorAll('.row')].find(row=>row.querySelector('.label')?.textContent==='严格模式').querySelector('input'))`;
+  await evaluate(`${strictInput}.click();document.querySelector('.page-head button.primary').click()`);
+  await wait(`location.hash==='#/admin/c/${contestId}'`);
+  assert.equal(contest.strict, false);
+  await evaluate(`location.hash='#/admin/c/${contestId}/edit'`); await wait('document.querySelectorAll(".prow").length===2');
+  assert.equal(await evaluate(`${strictInput}.checked`), false);
+  await evaluate(`(()=>{const transfer=new DataTransfer();transfer.items.add(new File(['PK-drop'], 'dropped.zip'));document.querySelector('main').dispatchEvent(new DragEvent('drop',{dataTransfer:transfer,bubbles:true,cancelable:true}));})()`);
+  await wait(`document.body.textContent.includes('dropped.zip') && document.body.textContent.includes('保存后上传')`);
+  await evaluate(`document.querySelector('.page-head button.primary').click()`); await wait(`location.hash==='#/admin/c/${contestId}'`);
+  assert.equal(await fs.readFile(app.ctx.downZipFile(contest), 'utf8'), 'PK-drop');
+  await evaluate(`location.hash='#/admin/c/${contestId}/edit'`); await wait('document.querySelectorAll(".prow").length===2');
+  await evaluate(`(()=>{const transfer=new DataTransfer();transfer.items.add(new File(['PK-paste'], 'pasted.zip'));document.querySelector('main').dispatchEvent(new ClipboardEvent('paste',{clipboardData:transfer,bubbles:true,cancelable:true}));})()`);
+  await wait(`document.body.textContent.includes('pasted.zip')`);
+  await evaluate(`document.querySelector('.page-head button.primary').click()`); await wait(`location.hash==='#/admin/c/${contestId}'`);
+  assert.equal(await fs.readFile(app.ctx.downZipFile(contest), 'utf8'), 'PK-paste');
+  const cohort = await adminApi('POST', '/api/admin/groups', { name: '榜单筛选组' });
+  await adminApi('PUT', `/api/admin/users/${user.id}`, { groups: [cohort.id] });
+  await evaluate('route()'); await wait('!!document.querySelector("select[aria-label=榜单分组]")');
+  await evaluate(`(()=>{const select=document.querySelector('select[aria-label=榜单分组]');select.value=${JSON.stringify(String(cohort.id))};select.dispatchEvent(new Event('change'));})()`);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('tr[data-user]')].map(row=>row.dataset.user)`), ['alice']);
+  console.log('PASS strict-mode persistence, dropped/pasted down.zip and group-filtered standings');
 } finally {
   if (send) await Promise.race([send('Browser.close').catch(() => {}), delay(500)]);
   socket?.close(); browser.kill(); app.stop();

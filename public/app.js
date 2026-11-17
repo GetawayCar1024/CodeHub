@@ -343,13 +343,13 @@ async function route() {
       if (!a) return await renderAdminContests();
       if (a === 'page') return await renderAdminContests(Math.max(1, Number.parseInt(b, 10) || 1));
       if (a === 'new') return await renderContestForm(null);
-      if (a === 'c' && c === 'edit') return await renderContestForm(Number(b));
-      if (a === 'c') return await renderBoard(Number(b));
+      if (a === 'c' && c === 'edit') return await renderContestForm(b);
+      if (a === 'c') return await renderBoard(b);
       if (a === 'users') return await renderUsers();
       if (a === 'settings') return await renderSettings(b);
       return go('#/admin');
     }
-    if (parts[0] === 'c') return await renderContest(Number(parts[1]));
+    if (parts[0] === 'c') return await renderContest(parts[1]);
     if (parts[0] === 'page') return await renderContestList(Math.max(1, Number.parseInt(parts[1], 10) || 1));
     return await renderContestList();
   } catch (e) {
@@ -414,11 +414,11 @@ async function renderContestList(page = 1) {
     main.appendChild(h('div', { class: 'card empty' }, '当前没有比赛'));
   } else {
     append(main, h('div', { class: 'group contest-list' }, r.contests.map((c) =>
-      h('div', { class: 'row link', 'data-contest': c.id, 'aria-disabled': !!c.historyBlocked, onclick: () => c.historyBlocked ? toast('正在参加严格模式比赛，暂时不能查看历史比赛', true) : go('#/c/' + c.id) },
+      h('div', { class: 'row link', 'data-contest': c.id, 'aria-disabled': !!c.historyBlocked, onclick: () => c.historyBlocked ? toast('正在参加严格模式比赛，暂时不能查看历史比赛', true) : go('#/c/' + enc(c.id)) },
         h('div', { class: 'grow' },
           h('div', { class: 'name' }, c.title, h('span', { class: 'muted small', style: { marginLeft: '10px' } }, c.strict ? '严格模式' : '非严格模式')),
           h('div', { class: 'muted small' }, fmtRange(c.startTime, c.endTime))),
-        h('span', { class: 'badge ' + PHASE_BADGE[c.phase] }, c.historyBlocked ? '暂不可查看' : PHASE[c.phase]),
+        h('span', { class: 'badge ' + PHASE_BADGE[c.phase] }, c.historyBlocked ? '暂不可查看' : c.phase === 'ended' && !c.joinedAt ? '未参加' : PHASE[c.phase]),
         h('span', { class: 'chev' }, '›')))),
     pager(r.page, r.pages, (p) => (p > 1 ? '#/page/' + p : '#/')));
   }
@@ -474,6 +474,7 @@ function sourceDialog(title, code) {
 }
 
 async function renderContest(id) {
+  id = enc(id);
   let c = await api('GET', '/api/contests/' + id);
   if (c.requiresConfirmation) return renderJoinConfirmation(c);
   let refreshing = false;
@@ -507,7 +508,7 @@ async function renderContest(id) {
         h('ul', { class: 'steps' },
           step(0, '下载考生手册并仔细阅读', c.manual ? h('a', { href: '/api/manual', target: '_blank' }, '下载') : h('span', { class: 'muted' }, '暂无考生手册')),
           step(1, '下载试题包并解压', h('span', { 'data-material': 'downzip' },
-            c.downZipState === 'available' ? h('a', { href: `/api/contests/${c.id}/down.zip` }, '下载')
+            c.downZipState === 'available' ? h('a', { href: `/api/contests/${enc(c.id)}/down.zip` }, '下载')
               : h('span', { class: 'muted' }, c.downZipState === 'pending' ? `待下发（${fmtTime(c.downZipReleaseAt, false)}）` : '未设置 down.zip'))),
           step(2, '用密码解密试题册', h('span', { 'data-material': 'password' },
             c.passwordState === 'available' ? h('code', { class: 'pwd' }, c.password)
@@ -555,7 +556,7 @@ async function renderContest(id) {
   const finishEarly = async () => {
     if (!(await confirmBox('提前结束比赛', '结束后不能再提交代码，但仍可进入本页查看已提交的代码。确定结束？', '结束比赛', true))) return;
     try {
-      await api('POST', `/api/contests/${c.id}/finish`);
+      await api('POST', `/api/contests/${enc(c.id)}/finish`);
       toast('已结束比赛');
       refresh();
     } catch (e) { fail(e); }
@@ -595,7 +596,7 @@ async function renderContest(id) {
       { label: '关闭' },
       { label: '提交', primary: true, onClick: async () => {
         if (!ed.value.trim()) { toast('代码为空', true); return false; }
-        await api('POST', `/api/contests/${c.id}/submit`, { problem: p.name, code: ed.value, language: 'C++' });
+        await api('POST', `/api/contests/${enc(c.id)}/submit`, { problem: p.name, code: ed.value, language: 'C++' });
         toast('提交成功');
         refresh();
       } },
@@ -604,7 +605,7 @@ async function renderContest(id) {
 
   const viewSource = async (p) => {
     try {
-      const s = await api('GET', `/api/contests/${c.id}/source/${enc(p.name)}`);
+      const s = await api('GET', `/api/contests/${enc(c.id)}/source/${enc(p.name)}`);
       sourceDialog(`${p.title} · ${s.lang}`, s.code);
     } catch (e) { fail(e); }
   };
@@ -618,7 +619,7 @@ async function renderContest(id) {
 function renderJoinConfirmation(c) {
   const join = h('button', { class: 'primary', 'data-join-contest': c.id, onclick: async () => {
     join.disabled = true;
-    try { await api('POST', `/api/contests/${c.id}/join`, { confirm: true, strict: c.strict }); await route(); }
+    try { await api('POST', `/api/contests/${enc(c.id)}/join`, { confirm: true, strict: c.strict }); await route(); }
     catch (error) { fail(error); if (error.status === 409) route(); else if ([403, 404].includes(error.status)) go('#/'); }
     finally { join.disabled = false; }
   } }, '确认参加');
@@ -632,7 +633,7 @@ function renderJoinConfirmation(c) {
     h('p', { class: 'muted' }, c.strict ? '确认参加后，结束本场比赛前暂时无法查看历史比赛。仍可同时参加其他比赛。' : '可以同时参加其他比赛，也可以查看历史比赛。'),
     h('div', { class: 'flex' }, h('button', { onclick: () => go('#/'), 'data-decline-contest': true }, '不参加，返回'), join)));
   main.classList.add('narrow');
-  refreshWhenChanged('/api/contests/' + c.id, c);
+  refreshWhenChanged('/api/contests/' + enc(c.id), c);
 }
 
 // ============================================================ admin: contests
@@ -657,7 +658,7 @@ async function renderAdminContests(page = 1) {
     return;
   }
   append(main, h('div', { class: 'group contest-list' }, list.map((c) =>
-    h('div', { class: 'row link', onclick: () => go('#/admin/c/' + c.id) },
+    h('div', { class: 'row link', onclick: () => go('#/admin/c/' + enc(c.id)) },
       h('div', { class: 'grow' },
         h('div', { class: 'name' }, c.title, c.title !== c.name ? h('span', { class: 'muted small', style: { fontWeight: 400, marginLeft: '8px' } }, c.name) : null),
         h('div', { class: 'muted small' }, `${fmtRange(c.startTime, c.endTime)} · ${c.problems.length} 题 · ${c.submissions} 份提交`)),
@@ -669,6 +670,7 @@ async function renderAdminContests(page = 1) {
 }
 
 async function renderContestForm(id) {
+  id = id == null ? null : enc(id);
   const [loadedContest, groups, settings] = await Promise.all([
     id ? api('GET', '/api/admin/contests/' + id) : null,
     api('GET', '/api/admin/groups'),
@@ -696,7 +698,7 @@ async function renderContestForm(id) {
   const main = shell('contests', h('div', { class: 'page-head' },
     h('h2', null, contest ? '编辑比赛' : '新建比赛'),
     h('div', { class: 'right' },
-      h('button', { onclick: () => go(contest ? '#/admin/c/' + contest.id : '#/admin') }, '取消'),
+      h('button', { onclick: () => go(contest ? '#/admin/c/' + enc(contest.id) : '#/admin') }, '取消'),
       h('button', { class: 'primary', onclick: () => save() }, '保存'))));
   main.classList.add('narrow');
 
@@ -827,7 +829,7 @@ async function renderContestForm(id) {
     put(dzState, 
       pendingDownZip ? h('span', null, pendingDownZip.name, h('span', { class: 'muted' }, ` · ${fmtSize(pendingDownZip.size)} · 保存后上传`))
         : lemonDownZip ? h('span', null, `从 LemonServer 导入（${lemonDownZip}）`)
-          : dz ? h('span', null, h('a', { href: `/api/admin/contests/${contest.id}/downzip` }, dz.name), h('span', { class: 'muted' }, ` · ${fmtSize(dz.size)}`))
+          : dz ? h('span', null, h('a', { href: `/api/admin/contests/${enc(contest.id)}/downzip` }, dz.name), h('span', { class: 'muted' }, ` · ${fmtSize(dz.size)}`))
             : h('span', { class: 'muted' }, '未设置'),
       h('div', { class: 'grow' }),
       h('button', { class: 'small', onclick: chooseDz }, dz || pendingDownZip ? '替换' : '上传'),
@@ -836,16 +838,36 @@ async function renderContestForm(id) {
   const chooseDz = async () => {
     const file = await pickFile('.zip,.7z,.rar');
     if (!file) return;
+    acceptDownFile(file);
+  };
+  const acceptDownFile = file => {
+    if (!/\.(zip|7z|rar)$/i.test(file.name)) return toast('请选择压缩包文件', true);
     lemonDownZip = null;
     // Save the release schedule before uploading, including for existing contests.
     // Otherwise selecting a file could expose it under the previously saved schedule.
     pendingDownZip = file;
     renderDz();
   };
+  main.addEventListener('dragover', event => { if ([...event.dataTransfer.types].includes('Files')) { event.preventDefault(); main.classList.add('file-drop'); } });
+  main.addEventListener('dragleave', event => { if (!main.contains(event.relatedTarget)) main.classList.remove('file-drop'); });
+  main.addEventListener('drop', event => {
+    main.classList.remove('file-drop');
+    if (!event.dataTransfer.files.length) return;
+    event.preventDefault();
+    if (event.dataTransfer.files.length !== 1) return toast('一次请选择一个题包', true);
+    acceptDownFile(event.dataTransfer.files[0]);
+  });
+  main.addEventListener('paste', event => {
+    const files = [...(event.clipboardData?.files || [])];
+    if (!files.length) return;
+    event.preventDefault();
+    if (files.length !== 1) return toast('一次请选择一个题包', true);
+    acceptDownFile(files[0]);
+  });
   const removeDz = async () => {
     if (pendingDownZip || lemonDownZip) { pendingDownZip = lemonDownZip = null; return renderDz(); }
     if (!(await confirmBox('删除试题包', '删除后选手无法下载。', '删除', true))) return;
-    try { Object.assign(contest, await api('DELETE', `/api/admin/contests/${contest.id}/downzip`)); } catch (e) { fail(e); }
+    try { Object.assign(contest, await api('DELETE', `/api/admin/contests/${enc(contest.id)}/downzip`)); } catch (e) { fail(e); }
     renderDz();
   };
   renderDz();
@@ -947,23 +969,23 @@ async function renderContestForm(id) {
       name: (f.name || '').trim(), title: f.title, startTime: f.startTime, endTime: f.endTime,
       earlyMinutes: f.earlyMinutes, problems: f.problems.filter((p) => p.name || p.title), groups: f.groups,
       downZipReleaseMinutes: f.downZipReleaseMinutes, passwordReleaseMinutes: f.passwordReleaseMinutes,
-      subFolder: f.subFolder, downZipPassword: f.downZipPassword, lemon: { contest: f.lemon.contest || '', interval: f.lemon.interval },
+      subFolder: f.subFolder, strict: f.strict !== false, downZipPassword: f.downZipPassword, lemon: { contest: f.lemon.contest || '', interval: f.lemon.interval },
     };
     saving = true;
     try {
-      const r = contest ? await api('PUT', '/api/admin/contests/' + contest.id, body) : await api('POST', '/api/admin/contests', body);
+      const r = contest ? await api('PUT', '/api/admin/contests/' + enc(contest.id), body) : await api('POST', '/api/admin/contests', body);
       contest = r; // if a new contest's upload fails, retry saves this contest rather than creating it again
       if (pendingDownZip) { contest = await uploadDownZip(r.id, pendingDownZip); pendingDownZip = null; }
-      if (lemonDownZip) await api('POST', `/api/admin/contests/${r.id}/downzip/from-lemon`, { contest: lemonDownZip }).catch((e) => toast('导入 down.zip 失败：' + e.message, true));
+      if (lemonDownZip) await api('POST', `/api/admin/contests/${enc(r.id)}/downzip/from-lemon`, { contest: lemonDownZip }).catch((e) => toast('导入 down.zip 失败：' + e.message, true));
       toast('已保存');
-      go('#/admin/c/' + r.id);
+      go('#/admin/c/' + enc(r.id));
     } catch (e) { fail(e); } finally { saving = false; }
   };
 }
 
 async function uploadDownZip(id, file) {
   toast('正在上传…');
-  return api('PUT', `/api/admin/contests/${id}/downzip?name=${enc(file.name)}`, undefined, { raw: file });
+  return api('PUT', `/api/admin/contests/${enc(id)}/downzip?name=${enc(file.name)}`, undefined, { raw: file });
 }
 
 async function deleteContest(c) {
@@ -972,7 +994,7 @@ async function deleteContest(c) {
     h('label', { class: 'check' }, files, '同时删除选手代码文件')), [
     { label: '取消' },
     { label: '删除', danger: true, onClick: async () => {
-      await api('DELETE', `/api/admin/contests/${c.id}${files.checked ? '?deleteFiles=1' : ''}`);
+      await api('DELETE', `/api/admin/contests/${enc(c.id)}${files.checked ? '?deleteFiles=1' : ''}`);
       toast('已删除');
       go('#/admin');
     } },
@@ -983,9 +1005,11 @@ const TASK_KIND = { periodic: '定时', submit: '提交触发', final: '赛后',
 const TASK_STATE = { running: '准备中', queued: '排队中', judging: '评测中', done: '完成', skipped: '已跳过', error: '失败' };
 
 async function renderBoard(id) {
+  id = enc(id);
   let b = await api('GET', `/api/admin/contests/${id}/board`);
   let order = { key: 'username', direction: 1 };
   let showAbsent = true; // contestants who have not confirmed entry
+  let groupFilter = '';
   const picked = new Set(); // contestants selected for extra time
   const main = shell('contests');
   const body = h('div');
@@ -995,10 +1019,11 @@ async function renderBoard(id) {
     const c = b.contest;
     const L = b.lemon;
     const scored = L.linked && L.reachable;
-    const visibleRows = showAbsent ? b.rows : b.rows.filter((r) => r.joinedAt);
+    const groupRows = groupFilter ? b.rows.filter(row => row.groups?.includes(Number(groupFilter))) : b.rows;
+    const visibleRows = showAbsent ? groupRows : groupRows.filter((r) => r.joinedAt);
     for (const uid of [...picked]) if (!visibleRows.some((r) => r.id === uid && r.canExtend)) picked.delete(uid);
     const extendable = visibleRows.filter((r) => r.canExtend);
-    const absent = b.rows.length - b.rows.filter((r) => r.joinedAt).length;
+    const absent = groupRows.length - groupRows.filter((r) => r.joinedAt).length;
     const finished = visibleRows.filter((r) => r.finishedAt).length;
     let submitted = 0, judged = 0;
     for (const r of visibleRows) for (const cell of Object.values(r.cells)) { submitted++; if (cell.judged) judged++; }
@@ -1084,10 +1109,13 @@ async function renderBoard(id) {
         h('span', { class: 'badge ' + PHASE_BADGE[c.phase] }, PHASE[c.phase]),
         h('span', { class: 'muted' }, fmtRange(c.startTime, c.endTime)),
         h('div', { class: 'right' },
-          submitted ? h('a', { class: 'btn', href: `/api/admin/contests/${c.id}/archive.zip` }, '下载全部代码') : null,
-          h('button', { onclick: () => go(`#/admin/c/${c.id}/edit`) }, '编辑'))),
+          submitted ? h('a', { class: 'btn', href: `/api/admin/contests/${enc(c.id)}/archive.zip` }, '下载全部代码') : null,
+          h('button', { onclick: () => go(`#/admin/c/${enc(c.id)}/edit`) }, '编辑'))),
       lemonCard,
-      h('div', { class: 'toolbar board-tools' }, absentToggle, h('div', { class: 'grow' }),
+      h('div', { class: 'toolbar board-tools' },
+        h('select', { 'aria-label': '榜单分组', value: groupFilter, onchange: event => { groupFilter = event.target.value; render(); } },
+          h('option', { value: '', selected: !groupFilter }, '全部组别'), ...(b.groups || []).map(group => h('option', { value: group.id, selected: String(group.id) === groupFilter }, group.name))),
+        absentToggle, h('div', { class: 'grow' }),
         picked.size ? h('div', { class: 'bulkbar' }, h('span', null, `已选 ${picked.size} 人`),
           h('button', { class: 'small', 'data-extend-selected': true, onclick: () => extendUsers(b.rows.filter((r) => picked.has(r.id))) }, '设置延时'),
           h('button', { class: 'small plain', onclick: () => { picked.clear(); render(); } }, '取消选择')) : null),
@@ -1164,7 +1192,7 @@ async function renderBoard(id) {
 
 async function adminSource(c, r, p) {
   try {
-    const s = await api('GET', `/api/admin/contests/${c.id}/source/${r.id}/${enc(p.name)}`);
+    const s = await api('GET', `/api/admin/contests/${enc(c.id)}/source/${r.id}/${enc(p.name)}`);
     sourceDialog(`${r.username} · ${p.name}`, s.code);
   } catch (e) { fail(e); }
 }

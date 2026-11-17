@@ -10,6 +10,7 @@ import { hashPassword, randomToken } from './util.js';
 import { setupUserRoutes } from './routes-user.js';
 import { setupAdminRoutes } from './routes-admin.js';
 import { joinedAt } from './participation.js';
+import { migrateContestNames } from './contest-identity.js';
 
 export { VERSION } from './version.js';
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -19,7 +20,7 @@ const SESSION_IDLE = 7 * 24 * 3600 * 1000;
 export const DEFAULT_ADMIN_PASSWORD = '123456';
 
 const DEFAULTS = {
-  version: 1,
+  version: 2,
   settings: {
     siteTitle: 'CodeHub',
     storageRoot: '',
@@ -51,17 +52,11 @@ const MIME = {
 };
 
 export function createApp({ dataDir, resetAdmin = false, log = console.log }) {
-  const store = new Store(path.join(dataDir, 'codehub.json'));
+  const store = new Store(path.join(dataDir, 'codehub.json'), (...args) => log(...args));
   const data = store.load(DEFAULTS);
   // Identifies this server to LemonServer, which keeps the contestants of several CodeHub servers
   // linked to one contest apart.
   if (typeof data.instanceId !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(data.instanceId)) data.instanceId = randomToken(18);
-  for (const c of data.contests) for (const uid of new Set([
-    ...Object.keys(data.submissions[c.id] || {}), ...Object.keys(data.finished[c.id] || {}),
-  ])) {
-    const time = joinedAt(data, c, uid);
-    if (time) (data.participants[c.id] ??= {})[uid] = time;
-  }
 
   const ctx = {
     data,
@@ -78,12 +73,19 @@ export function createApp({ dataDir, resetAdmin = false, log = console.log }) {
     submissionFile(c, username, problem) {
       return path.join(ctx.contestDir(c), ...ctx.submissionRelPath(c, username, problem).split('/'));
     },
-    downZipFile(c) { return path.join(ctx.filesDir, 'contest-' + c.id, 'down.zip'); },
+    downZipFile(c) { return path.join(ctx.filesDir, 'contests', c.name, 'down.zip'); },
     manualFile() { return path.join(ctx.filesDir, 'manual'); },
     newId(kind) { return data.nextId[kind]++; },
     user(id) { return data.users.find((u) => u.id === Number(id)); },
-    contest(id) { return data.contests.find((c) => c.id === Number(id)); },
+    contest(id) { return data.contests.find(c => c.name === String(id)) || data.contests.find(c => c.aliases?.includes(String(id)) || c.legacyId !== undefined && String(c.legacyId) === String(id)); },
   };
+  migrateContestNames(ctx);
+  for (const c of data.contests) for (const uid of new Set([
+    ...Object.keys(data.submissions[c.id] || {}), ...Object.keys(data.finished[c.id] || {}),
+  ])) {
+    const time = joinedAt(data, c, uid);
+    if (time) (data.participants[c.id] ??= {})[uid] = time;
+  }
 
   let admin = data.users.find((u) => u.role === 'admin');
   if (!admin) {
@@ -173,6 +175,7 @@ export function createApp({ dataDir, resetAdmin = false, log = console.log }) {
       req.user = sessionUser(req);
       req.query = url.searchParams;
       const result = await m.handler(req, res, m.params);
+      if (req.method !== 'GET' && req.method !== 'HEAD') store.flush();
       if (!res.headersSent && result !== undefined) sendJson(res, 200, result);
     } catch (err) {
       // an unhandled LemonServer error is a gateway error, not a bug of CodeHub

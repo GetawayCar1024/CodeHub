@@ -39,7 +39,7 @@ jobs:
         run: node tests/login-layout.mjs
 
       - name: Participation and user exports
-        run: node --test tests/participation.mjs
+        run: node --test tests/participation.mjs tests/reliability.mjs
 
       - name: Shared LemonServer contests
         run: node --test tests/lemon-sharing.mjs
@@ -95,7 +95,7 @@ jobs:
         run: node tests/login-layout.mjs
 
       - name: Participation and user exports
-        run: node --test tests/participation.mjs
+        run: node --test tests/participation.mjs tests/reliability.mjs
 
       - name: Shared LemonServer contests
         run: node --test tests/lemon-sharing.mjs

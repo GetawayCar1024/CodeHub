@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fail } from './http.js';
+import { contestStateKeys } from './contest-identity.js';
 
 function problemRenames(contest, next, rows) {
   const renames = new Map(), used = new Set(), unknown = [];
@@ -53,6 +54,11 @@ export function commitContestEdit(ctx, contest, next, rows) {
     fail(409, '正在同步或评测，请完成后再修改文件名');
 
   const data = ctx.data, id = contest.id;
+  const oldMaps = Object.fromEntries(contestStateKeys.map(key => [key, { ...data[key] }]));
+  if (folderChanged) {
+    next.aliases = [...new Set([...(contest.aliases || []), contest.name])];
+    for (const key of contestStateKeys) if (Object.hasOwn(data[key], next.id)) fail(409, '目标比赛名已有记录，未覆盖数据');
+  }
   const oldContest = { ...contest }, oldSubmissions = data.submissions[id];
   const oldPending = data.lemonPending[id], oldState = data.lemonState[id];
   const submissions = renames.size && oldSubmissions ? { ...oldSubmissions } : oldSubmissions;
@@ -95,6 +101,8 @@ export function commitContestEdit(ctx, contest, next, rows) {
       fail(409, `目标文件或目录已存在：${path.basename(move.destination)}，未覆盖任何文件`);
   }
   const fromFolder = ctx.contestDir(contest), toFolder = ctx.contestDir(next);
+  const fromMaterials = path.dirname(ctx.downZipFile(contest)), toMaterials = path.dirname(ctx.downZipFile(next));
+  if (folderChanged && entry(fromMaterials) && entry(toMaterials) && !sameEntry(fromMaterials, toMaterials)) fail(409, '目标比赛名已有题包目录');
   if (folderChanged && entry(fromFolder)) {
     if (!entry(fromFolder).isDirectory() || entry(fromFolder).isSymbolicLink()) fail(409, '比赛目录不是普通文件夹');
     if (entry(toFolder) && !sameEntry(fromFolder, toFolder)) fail(409, '目标比赛文件夹已存在');
@@ -114,6 +122,7 @@ export function commitContestEdit(ctx, contest, next, rows) {
   }
 
   const undo = [];
+  const nextState = ctx.lemon.linked(next) && filesChanged ? { ...ctx.lemon.state(contest), finalDone: false } : null;
   const move = (from, to) => { fs.renameSync(from, to); undo.push(() => fs.renameSync(to, from)); };
   try {
     for (const item of moves) {
@@ -134,16 +143,22 @@ export function commitContestEdit(ctx, contest, next, rows) {
       if (entry(toFolder)) fail(409, '目标比赛文件夹已存在');
       move(temporary, toFolder);
     }
+    if (folderChanged && entry(fromMaterials)) {
+      const temporary = path.join(ctx.filesDir, '.codehub-rename-' + randomUUID());
+      move(fromMaterials, temporary); move(temporary, toMaterials);
+    }
     Object.assign(contest, next);
     if (submissions) data.submissions[id] = submissions;
     if (filesChanged && (oldPending || ctx.lemon.linked(contest))) data.lemonPending[id] = nextPending;
-    if (ctx.lemon.linked(contest) && filesChanged) data.lemonState[id] = { ...ctx.lemon.state(contest), finalDone: false };
+    if (nextState) data.lemonState[id] = nextState;
+    if (folderChanged) for (const key of contestStateKeys) if (Object.hasOwn(data[key], id)) {
+      data[key][next.id] = data[key][id]; delete data[key][id];
+    }
     ctx.store.flush();
   } catch (error) {
     Object.assign(contest, oldContest);
-    for (const [name, value] of [['submissions', oldSubmissions], ['lemonPending', oldPending], ['lemonState', oldState]]) {
-      if (value === undefined) delete data[name][id]; else data[name][id] = value;
-    }
+    if (oldContest.aliases === undefined) delete contest.aliases;
+    Object.assign(data, oldMaps);
     let rollbackFailed = false;
     for (const rollback of undo.reverse()) {
       try { rollback(); } catch (rollbackError) {
@@ -153,6 +168,9 @@ export function commitContestEdit(ctx, contest, next, rows) {
     }
     if (rollbackFailed) fail(500, '改名回滚失败，请保留 .codehub-rename-* 文件并检查服务器日志');
     throw error;
+  }
+  if (folderChanged && ctx.lemon.runtime.has(id)) {
+    ctx.lemon.runtime.set(next.id, ctx.lemon.runtime.get(id)); ctx.lemon.runtime.delete(id);
   }
   for (const item of moves) if (item.oldDirectory) {
     const dir = folderChanged ? path.join(toFolder, path.relative(fromFolder, item.oldDirectory)) : item.oldDirectory;

@@ -100,7 +100,7 @@ test('past contests retain only the caller’s materials and code, with a result
   assert.equal((await alice('GET', publicBase)).lemonResultsLink, 'https://results.example/#/contest/%E5%85%AC%E5%BC%80%E6%AF%94%E8%B5%9B/results');
 }));
 
-test('extra time validates participants and writes atomically', async t => fixture(t, async ({ app, admin, alice, uid, base }) => {
+test('extra time validates participants and writes atomically', async t => fixture(t, async ({ app, admin, alice, c, uid, base }) => {
   await alice('PUT', base + '/extensions/' + uid, { minutes: 10 }, 403);
   for (const minutes of [-1, 1.5, 10081, true, '5', null]) await admin('PUT', base + '/extensions/' + uid, { minutes }, 400);
   await admin('PUT', base + '/extensions/1', { minutes: 10 }, 404);
@@ -112,7 +112,7 @@ test('extra time validates participants and writes atomically', async t => fixtu
   const rename = fs.renameSync;
   t.mock.method(fs, 'renameSync', (from, to) => { if (to === app.ctx.store.file) throw Error('injected disk failure'); return rename(from, to); });
   await admin('PUT', base + '/extensions/' + uid, { minutes: 12 }, 500);
-  assert.equal(app.ctx.contest(1).extraMinutes[uid], 5);
+  assert.equal(app.ctx.contest(c.id).extraMinutes[uid], 5);
   t.mock.restoreAll();
 }));
 

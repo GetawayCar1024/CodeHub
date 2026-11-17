@@ -63,6 +63,7 @@ h1 { font-size: 26px; }
 h2 { font-size: 20px; }
 h3 { font-size: 15px; }
 .join-confirmation { margin-top: 24px; overflow-wrap: anywhere; }
+.file-drop { outline: 2px solid var(--green); outline-offset: -2px; }
 .join-confirmation .kv { margin: 24px 0; }
 .join-confirmation .flex { justify-content: flex-end; margin-top: 24px; }
 .countdown .time.ended { font-family: inherit; font-size: 32px; font-weight: 600; }

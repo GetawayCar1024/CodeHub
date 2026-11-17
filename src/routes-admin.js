@@ -11,6 +11,7 @@ import { materialTiming } from './contest-materials.js';
 import { contestantEnd, extraMinutes, lastEnd } from './contest-time.js';
 import { joinedAt } from './participation.js';
 import { exportUsers, parseUserRows } from './user-export.js';
+import { contestNameValid } from './contest-identity.js';
 
 const MAX_UPLOAD = 1024 * 1024 * 1024;
 const collator = new Intl.Collator('zh-CN', { numeric: true });
@@ -360,9 +361,10 @@ export function setupAdminRoutes(router, ctx) {
     const next = { ...c };
     if (isNew || 'name' in body) {
       const name = String(body.name ?? '').trim();
-      if (!isValidName(name)) fail(400, '比赛名无效（将作为文件夹名）');
+      if (!contestNameValid(name)) fail(400, '比赛名无效（将作为文件夹名）');
       if (data.contests.some((x) => x.id !== c.id && sameName(x.name, name))) fail(409, '比赛名已存在');
       next.name = name;
+      next.id = name;
     }
     if (isNew || 'title' in body) next.title = String(body.title ?? '').trim() || next.name;
     if (isNew || 'startTime' in body || 'endTime' in body) {
@@ -464,7 +466,7 @@ export function setupAdminRoutes(router, ctx) {
     const body = await readJson(req);
     const c = applyContest({ id: 0 }, body, true);
     await checkLemonLink(null, body);
-    c.id = ctx.newId('contest');
+    c.id = c.name;
     c.downZip = null;
     c.createdAt = Date.now();
     data.contests.push(c);
@@ -568,7 +570,7 @@ export function setupAdminRoutes(router, ctx) {
           compileState: judged ? t.compileState ?? 0 : null,
         };
       }
-      return { id: u.id, username: u.username, realName: u.realName, cells, total, finishedAt: data.finished[c.id]?.[u.id] ?? null,
+      return { id: u.id, username: u.username, realName: u.realName, groups: u.groups || [], cells, total, finishedAt: data.finished[c.id]?.[u.id] ?? null,
         joinedAt: joinedAt(data, c, u.id),
         extraMinutes: extraMinutes(c, u.id), endTime: contestantEnd(c, u.id),
         canExtend: allowedFor(c, u) && !data.finished[c.id]?.[u.id] && Date.now() < contestantEnd(c, u.id) };
@@ -577,6 +579,7 @@ export function setupAdminRoutes(router, ctx) {
       contest: contestJson(c),
       serverTime: Date.now(),
       rows,
+      groups: groupsJson(),
       lemon,
       fullScores: Object.fromEntries((remote?.tasks || []).map((t) => [t.sourceFileName, t.totalScore])),
       missingTasks: remote ? c.problems.filter((pr) => !taskIndex.has(pr.name)).map((pr) => pr.name) : [],
