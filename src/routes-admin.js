@@ -181,12 +181,7 @@ export function setupAdminRoutes(router, ctx) {
   // Before linking a contest to another LemonServer contest: it must exist and must not be archived.
   const checkLemonLink = async (c, body) => {
     const name = String(body.lemon?.contest ?? '').trim();
-    if (!('lemon' in body) || name === (c?.lemon?.contest || '')) return;
-    if (c) {
-      const runtime = ctx.lemon.rt(c);
-      if (runtime.busy || runtime.uploads || runtime.tasksUpdating) fail(409, '正在同步或评测，请完成后再修改关联');
-    }
-    if (!name || !ctx.lemon.client.configured()) return;
+    if (!('lemon' in body) || !name || name === (c?.lemon?.contest || '') || !ctx.lemon.client.configured()) return;
     const remote = await lemonCall('GET', ctx.lemon.client.contestPath(name));
     if (remote?.archived) fail(409, `LemonServer 比赛“${name}”已存档，不能关联`);
   };
@@ -362,16 +357,6 @@ export function setupAdminRoutes(router, ctx) {
     lemonLink: c.lemon?.contest && ctx.lemon.client.configured() ? ctx.lemon.client.resultsLink(c.lemon.contest) : null,
   });
 
-  const lemonSettings = value => {
-    const l = value || {};
-    const contest = String(l.contest ?? '').trim();
-    if (contest && !isValidName(contest, 128)) fail(400, 'LemonServer 比赛名无效');
-    if (contest && !ctx.lemon.client.configured()) fail(400, '请先在设置中接入 LemonServer');
-    const interval = l.interval === undefined || l.interval === null || l.interval === '' ? null : Number(l.interval);
-    if (interval !== null && (!Number.isInteger(interval) || interval < 0 || interval > 1440)) fail(400, '评测周期应为 0–1440 分钟');
-    return { contest, interval };
-  };
-
   const applyContest = (c, body, isNew) => {
     const next = { ...c };
     if (isNew || 'name' in body) {
@@ -440,7 +425,13 @@ export function setupAdminRoutes(router, ctx) {
     }
     if (isNew || 'downZipPassword' in body) next.downZipPassword = String(body.downZipPassword ?? '').slice(0, 200);
     if (isNew || 'lemon' in body) {
-      next.lemon = lemonSettings(body.lemon);
+      const l = body.lemon || {};
+      const lc = String(l.contest ?? '').trim();
+      if (lc && !isValidName(lc, 128)) fail(400, 'LemonServer 比赛名无效');
+      if (lc && !ctx.lemon.client.configured()) fail(400, '请先在设置中接入 LemonServer');
+      let interval = l.interval === undefined || l.interval === null || l.interval === '' ? null : Number(l.interval);
+      if (interval !== null && (!Number.isInteger(interval) || interval < 0 || interval > 1440)) fail(400, '评测周期应为 0–1440 分钟');
+      next.lemon = { contest: lc, interval };
     }
     return next;
   };
@@ -486,17 +477,6 @@ export function setupAdminRoutes(router, ctx) {
   });
 
   route('GET', '/api/admin/contests/:id', (req, res, p) => contestJson(getContest(p.id)));
-
-  // Linking does not edit the frozen contest schedule or replace historical submissions.
-  route('PUT', '/api/admin/contests/:id/lemon', async (req, res, p) => {
-    const c = getContest(p.id), body = await readJson(req);
-    const next = { ...c, lemon: lemonSettings(body) };
-    await checkLemonLink(c, { lemon: next.lemon });
-    const old = structuredClone(c);
-    commitContestEdit(ctx, c, next);
-    afterChange(c, old);
-    return contestJson(c);
-  });
 
   route('PUT', '/api/admin/contests/:id', async (req, res, p) => {
     const c = getContest(p.id);

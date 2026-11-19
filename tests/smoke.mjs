@@ -74,7 +74,7 @@ async function waitFor(what, fn, timeout = 60000) {
 try {
   const admin = client();
   const st = await admin('GET', '/api/status');
-  assert.equal(st.version, '0.1.15');
+  assert.equal(st.version, '0.1.14');
   assert.equal(st.user, null);
 
   step('admin login, CSRF header');
@@ -391,26 +391,6 @@ try {
     await waitFor('empty participant directory', () => fs.existsSync(path.join(LEMON_ROOT, name, 'source', 'SC-00002')));
     assert.deepEqual(fs.readdirSync(path.join(LEMON_ROOT, name, 'source', 'SC-00002')), []);
     assert.deepEqual(fs.readdirSync(path.join(dataDir, 'submissions', name, 'SC-00002')), []);
-
-    step('link a previously unlinked contest after it has ended and judge its historical code');
-    const lateName = 'LateLink' + Date.now(), lateRemote = '/api/contests/' + lateName;
-    await lemon('POST', '/api/contests', { json: { name: lateName }, token: lemonKey, expect: 201 });
-    await lemon('PUT', lateRemote + '/files/upload', { query: { root: 'data', path: 'a.in' }, raw: '1\n', token: lemonKey });
-    await lemon('PUT', lateRemote + '/files/upload', { query: { root: 'data', path: 'a.out' }, raw: '1\n', token: lemonKey });
-    await lemon('POST', lateRemote + '/tasks', { json: { problemTitle: 'A', sourceFileName: 'a', standardInputCheck: true, standardOutputCheck: true,
-      testCases: [{ fullScore: 100, timeLimit: 1000, memoryLimit: 128, inputFiles: ['a.in'], outputFiles: ['a.out'] }] }, token: lemonKey, expect: 201 });
-    const late = await admin('POST', '/api/admin/contests', { name: lateName, startTime: Date.now() + 60000, endTime: Date.now() + 3600000, problems: [{ name: 'a' }] });
-    await u2('POST', `/api/contests/${late.id}/join`, { confirm: true, strict: true });
-    setTimes(late.id, Date.now() - 1000, Date.now() + 60000);
-    await u2('POST', `/api/contests/${late.id}/submit`, { problem: 'a', code: '#include <cstdio>\nint main(){puts("1");}\n' });
-    setTimes(late.id, Date.now() - 7200000, Date.now() - 3600000);
-    const before = [app.ctx.contest(late.id).startTime, app.ctx.contest(late.id).endTime];
-    await admin('PUT', `/api/admin/contests/${late.id}/lemon`, { contest: lateName, interval: null });
-    await waitFor('late-link historical judging', async () => {
-      const result = await admin('GET', `/api/admin/contests/${late.id}/board`);
-      return result.lemon.finalDone && result.rows.find(row => row.username === 'SC-00002')?.cells.a?.score === 100;
-    });
-    assert.deepEqual([app.ctx.contest(late.id).startTime, app.ctx.contest(late.id).endTime], before);
   }
   console.log('ALL OK');
 } finally {
