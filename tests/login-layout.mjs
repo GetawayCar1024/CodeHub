@@ -438,8 +438,9 @@ try {
   await wait(`document.querySelector('.countdown .time')?.textContent==='已结束'`);
   await evaluate('logout()');
   await wait('!!document.querySelector(".login")');
+  await evaluate('window.__loginReloadMarker = true');
   await send('Page.reload');
-  await wait('!!document.querySelector(".login")');
+  await wait('window.__loginReloadMarker !== true && !!document.querySelector(".login")');
   await evaluate(`document.querySelector('.login input[type=text]').value='alice';document.querySelector('.login input[type=password]').value='test-password';document.querySelector('form.login').requestSubmit()`);
   await wait(`location.hash==='#/c/${contestId}' && document.querySelector('.countdown .time')?.textContent==='已结束'`);
   assert.equal(await evaluate(`(()=>{sessionStorage.setItem('codehub.loginReturn','https://example.org/');return loginReturn();})()`), '#/');
