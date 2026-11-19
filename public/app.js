@@ -1014,6 +1014,31 @@ async function renderBoard(id) {
   const main = shell('contests');
   const body = h('div');
   main.appendChild(body);
+  const linkLemon = async () => {
+    try {
+      let choices = await api('GET', '/api/admin/lemon/contests');
+      const current = b.contest.lemon?.contest || '';
+      if (current && !choices.some(item => item.name === current)) choices.push({ name: current, title: current });
+      const select = h('select', { class: 'full', 'aria-label': '关联的 LemonServer 比赛' });
+      const draw = selected => put(select, h('option', { value: '' }, '不关联'), ...choices.map(item => h('option', { value: item.name, selected: item.name === selected }, item.title && item.title !== item.name ? `${item.name}（${item.title}）` : item.name)));
+      draw(current);
+      const create = h('button', { class: 'small', onclick: async () => {
+        create.disabled = true;
+        try {
+          const name = b.contest.name;
+          await api('POST', '/api/admin/lemon/contests', { name, title: b.contest.title });
+          choices = await api('GET', '/api/admin/lemon/contests'); draw(name);
+        } catch (error) { fail(error); } finally { create.disabled = false; }
+      } }, '新建同名比赛');
+      modal('关联 LemonServer', h('div', { class: 'stack' }, select, create,
+        h('p', { class: 'muted small' }, b.contest.phase === 'ended' ? '赛后也可关联，不修改原比赛时间。关联后按原规则评测未评测的提交。' : '不修改比赛时间和提交记录。')), [
+        { label: '取消' }, { label: '保存关联', primary: true, onClick: async () => {
+          await api('PUT', `/api/admin/contests/${id}/lemon`, { contest: select.value, interval: b.contest.lemon?.interval ?? null });
+          await reload(); toast('关联已保存');
+        } },
+      ]);
+    } catch (error) { fail(error); }
+  };
 
   const render = () => {
     const c = b.contest;
@@ -1109,6 +1134,7 @@ async function renderBoard(id) {
         h('span', { class: 'badge ' + PHASE_BADGE[c.phase] }, PHASE[c.phase]),
         h('span', { class: 'muted' }, fmtRange(c.startTime, c.endTime)),
         h('div', { class: 'right' },
+          h('button', { 'data-link-lemon': true, disabled: !L.configured, title: L.configured ? '可在赛后关联' : '请先在设置中接入 LemonServer', onclick: linkLemon }, L.linked ? '更改关联' : '关联 LemonServer'),
           submitted ? h('a', { class: 'btn', href: `/api/admin/contests/${enc(c.id)}/archive.zip` }, '下载全部代码') : null,
           h('button', { onclick: () => go(`#/admin/c/${enc(c.id)}/edit`) }, '编辑'))),
       lemonCard,

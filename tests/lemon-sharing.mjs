@@ -29,6 +29,29 @@ async function fixture(run) {
 
 const contestBody = (extra = {}) => ({ name: 'shared', startTime: Date.now() + 60000, endTime: Date.now() + 3660000, problems: [{ name: 'sum' }], ...extra });
 
+test('a finished contest can be linked without changing its frozen schedule or submissions', async () => fixture(async ({ app, admin }) => {
+  const created = await admin('POST', '/api/admin/contests', contestBody());
+  const c = app.ctx.contest(created.id);
+  c.startTime = Date.now() - 7200000; c.endTime = Date.now() - 3600000;
+  const schedule = [c.startTime, c.endTime, c.earlyMinutes];
+  const user = app.ctx.data.users.find(user => user.username === 'alice');
+  const file = app.ctx.submissionFile(c, user.username, 'sum');
+  fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, '// historical submission');
+  app.ctx.data.submissions[c.id] = { [user.id]: { sum: { time: c.startTime + 1000, size: 24, count: 2, lang: 'C++' } } };
+  app.ctx.lemon.state(c).finalDone = true;
+  app.ctx.lemon.client.call = async () => ({ name: 'afterwards', archived: false, tasks: [] });
+  await admin('PUT', `/api/admin/contests/${encodeURIComponent(c.id)}/lemon`, { contest: 'afterwards', interval: null });
+  assert.equal(c.lemon.contest, 'afterwards');
+  assert.deepEqual([c.startTime, c.endTime, c.earlyMinutes], schedule);
+  assert.equal(app.ctx.lemon.state(c).finalDone, false);
+  assert.equal(fs.readFileSync(file, 'utf8'), '// historical submission');
+  assert.equal(app.ctx.data.submissions[c.id][user.id].sum.count, 2);
+  app.ctx.lemon.rt(c).busy = true;
+  await admin('PUT', `/api/admin/contests/${encodeURIComponent(c.id)}/lemon`, { contest: 'another' }, 409);
+  assert.equal(c.lemon.contest, 'afterwards');
+  app.ctx.lemon.rt(c).busy = false;
+}));
+
 test('archived LemonServer contests are not offered and cannot be linked', async () => fixture(async ({ app, admin }) => {
   const remote = { open: { name: 'open', archived: false, tasks: [] }, old: { name: 'old', archived: true, tasks: [] } };
   app.ctx.lemon.client.call = async (method, endpoint) => {

@@ -486,6 +486,22 @@ try {
   await evaluate(`(()=>{const select=document.querySelector('select[aria-label=榜单分组]');select.value=${JSON.stringify(String(cohort.id))};select.dispatchEvent(new Event('change'));})()`);
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('tr[data-user]')].map(row=>row.dataset.user)`), ['alice']);
   console.log('PASS strict-mode persistence, dropped/pasted down.zip and group-filtered standings');
+  const schedule = [contest.startTime, contest.endTime, contest.earlyMinutes];
+  const oldClient = app.ctx.lemon.client.call;
+  app.ctx.data.settings.lemon = { url: 'http://fixture.invalid', publicUrl: '', apiKey: 'fixture-key' };
+  app.ctx.lemon.client.call = async (method, route) => route === '/api/contests'
+    ? { contests: [{ name: 'late-target', title: '赛后评测', archived: false, tasks: 2 }] }
+    : { name: 'late-target', archived: false, tasks: contest.problems.map(p => ({ sourceFileName: p.name })), contestants: [] };
+  await evaluate('route()');
+  await wait(`!!document.querySelector('[data-link-lemon]:not(:disabled)')`);
+  await evaluate(`document.querySelector('[data-link-lemon]').click()`);
+  await wait(`!!document.querySelector('select[aria-label="关联的 LemonServer 比赛"]')`);
+  await evaluate(`document.querySelector('select[aria-label="关联的 LemonServer 比赛"]').value='late-target';[...document.querySelectorAll('.overlay button')].find(button=>button.textContent==='保存关联').click()`);
+  await wait(`!document.querySelector('.overlay') && document.querySelector('main').textContent.includes('late-target')`);
+  assert.equal(contest.lemon.contest, 'late-target');
+  assert.deepEqual([contest.startTime, contest.endTime, contest.earlyMinutes], schedule);
+  app.ctx.lemon.client.call = oldClient;
+  console.log('PASS the ended contest can be linked from its standings without editing the schedule');
 } finally {
   if (send) await Promise.race([send('Browser.close').catch(() => {}), delay(500)]);
   socket?.close(); browser.kill(); app.stop();

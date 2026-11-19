@@ -2,7 +2,7 @@
 
 信息学竞赛程序回收系统：选手在浏览器中提交源代码，管理员管理用户与比赛，可与 [LemonServer](https://github.com/GetawayCar1024/LemonServer) 联动评测。
 
-版本 0.1.14 · Node.js ≥ 22.2，无第三方依赖。
+版本 0.1.15 · Node.js ≥ 22.2，无第三方依赖。
 
 ## 安装
 
@@ -100,6 +100,8 @@ API：比赛设置提供 `downZipReleaseMinutes` 和 `passwordReleaseMinutes`。
 
 关联后：
 
+已结束的比赛也可以在提交概况中点“关联 LemonServer”，选择或新建未存档的目标比赛。此入口只修改关联，不改动冻结的比赛时间、题目和历史提交；后台仍按原规则补充评测未评测的代码。同步或评测过程中暂时不能切换关联。
+
 - 选手的每次提交都会上传到 LemonServer 比赛的 `source/` 中（失败会自动重试）。LemonServer 收到新代码后会把对应格子标为未评测，所以重新提交的代码在下一次任务中一定会重新评测。
 - 一次“任务”= 上传未同步的代码 → 在 LemonServer 的评测队列中加入“评测**未评测**的代码”（开始时先刷新选手）→ 等待它完成。该比赛上一次的评测还没完成（包括在 LemonServer 上手动发起的）时，本次跳过；LemonServer 正在评测其他比赛时，本次排队等待。需要 LemonServer ≥ 0.1.6。
 - 比赛结束后，等最后一次任务结束，再执行一次任务评测未评测的代码。
@@ -114,6 +116,8 @@ API：比赛设置提供 `downZipReleaseMinutes` 和 `passwordReleaseMinutes`。
 关联 LemonServer 时，改名后的代码会按新名字重新同步；请确保 LemonServer 的源程序名也已对应修改。不会改写代码里的 `freopen` 等字符串。
 
 API：`PUT /api/admin/contests/{id}` 的 `problems` 项可带 `previousName` 指定原题目，例如 `{"name":"sum","previousName":"aplusb","title":"求和"}`；新添加的题目可用 `previousName: null`。不带此字段时，仅在一进一出的对应关系唯一时推断改名，多题改名请显式提供原名。
+
+单独修改关联：`PUT /api/admin/contests/{比赛名}/lemon`，请求体为 `{"contest":"LemonServer比赛名","interval":null}`，赛后同样可用。此处 `interval` 的含义与完整比赛设置一致；目标比赛仍须未存档。
 
 ## 测试
 
