@@ -7,6 +7,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { createApp } from '../src/app.js';
+import { contestFolders } from '../src/folder-names.js';
 
 const browserPath = process.env.CHROME_BIN || [
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
@@ -199,14 +200,16 @@ try {
   const originalName = user.realName, originalRemote = app.ctx.lemon.rt(contest).remote;
   const originalStatus = app.ctx.lemon.status.bind(app.ctx.lemon);
   user.realName = 'Zoe';
-  // Real board API, with only the external judging response replaced by a deterministic fixture.
-  app.ctx.lemon.rt(contest).remote = {
-    tasks: contest.problems.map(problem => ({ sourceFileName: problem.name, totalScore: 100 })),
-    contestants: [user, ...extraUsers].map(item => ({ name: item.username, tasks: (item.username === 'alice' ? [90, 10] : item.username === 'bob' ? [50, 90] : [null, null]).map(score => ({ score, judged: score !== null, compileState: 0 })) })),
-  };
   for (const extra of extraUsers) app.ctx.data.submissions[contestId][extra.id] = {
     'new-beta': { time: Date.now(), size: 6, count: 1, lang: 'C++' },
     'new-alpha': { time: Date.now(), size: 7, count: 1, lang: 'C++' },
+  };
+  // Real board API, with only the external judging response replaced by a deterministic fixture
+  // (LemonServer names contestants by their folders).
+  const folders = contestFolders(app.ctx.data, contest).names;
+  app.ctx.lemon.rt(contest).remote = {
+    tasks: contest.problems.map(problem => ({ sourceFileName: problem.name, totalScore: 100 })),
+    contestants: [user, ...extraUsers].map(item => ({ name: folders.get(String(item.id)), tasks: (item.username === 'alice' ? [90, 10] : item.username === 'bob' ? [50, 90] : [null, null]).map(score => ({ score, judged: score !== null, compileState: 0 })) })),
   };
   app.ctx.lemon.status = async value => value.id === contestId ? { linked: true, configured: true, reachable: true, contest: 'fixture', history: [], link: '#' } : originalStatus(value);
   await evaluate('route()');
@@ -486,6 +489,19 @@ try {
   await evaluate(`(()=>{const select=document.querySelector('select[aria-label=榜单分组]');select.value=${JSON.stringify(String(cohort.id))};select.dispatchEvent(new Event('change'));})()`);
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('tr[data-user]')].map(row=>row.dataset.user)`), ['alice']);
   console.log('PASS strict-mode persistence, dropped/pasted down.zip and group-filtered standings');
+  await evaluate(`location.hash='#/admin/c/${contestId}/edit'`); await wait('document.querySelectorAll(".prow").length===2');
+  await wait(`document.querySelector('.folder-examples')?.textContent.length > 0`);
+  await evaluate(`[...document.querySelectorAll('.segmented button')].find(button=>button.textContent==='自定义').click()`);
+  await evaluate(`(()=>{const input=document.querySelector('input[name=folderFormat]');input.value='te{id:3}st';input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await wait(`document.querySelector('.folder-examples').textContent.includes('te001st')`);
+  await evaluate(`(()=>{const input=document.querySelector('input[name=folderFormat]');input.value='te{id:0}st';input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await wait(`document.querySelector('.folder-examples .danger-text')?.textContent.includes('1–9')`);
+  await evaluate(`(()=>{const input=document.querySelector('input[name=folderFormat]');input.value='te{id:3}st';input.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.page-head button.primary').click();})()`);
+  await wait(`location.hash==='#/admin/c/${contestId}'`);
+  assert.equal(contest.folderFormat, 'te{id:3}st');
+  assert.ok(Object.keys(contest.folderNumbers).length > 0, 'the numbers of the contestants are stored');
+  await wait(`[...document.querySelectorAll('[data-folder]')].some(element => /^te00[1-9]st$/.test(element.textContent))`);
+  console.log('PASS custom folder name format with live examples, validation and stored numbers on the board');
 } finally {
   if (send) await Promise.race([send('Browser.close').catch(() => {}), delay(500)]);
   socket?.close(); browser.kill(); app.stop();

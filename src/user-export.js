@@ -26,16 +26,20 @@ export function exportUsers(data, query) {
     groups: (user.groups || []).map(id => data.groups.find(group => group.id === id)?.name).filter(Boolean) }));
   if (format === 'json') return { body: JSON.stringify(rows, null, 2), name: 'users.json', mime: 'application/json; charset=utf-8' };
   if (!['csv', 'tsv', 'txt'].includes(format)) fail(400, '请选择 CSV、TSV、TXT 或 JSON');
-  const delimiter = format === 'csv' ? ',' : '\t';
+  const lines = [USER_COLUMNS, ...rows.map(user => [user.username, '', user.realName, user.groups.join(';')])];
+  return { body: tableText(lines, format === 'csv' ? ',' : '\t'), name: 'users.' + format,
+    mime: format === 'csv' ? 'text/csv; charset=utf-8' : format === 'tsv' ? 'text/tab-separated-values; charset=utf-8' : 'text/plain; charset=utf-8' };
+}
+
+// Spreadsheet-safe text: formula-like cells are guarded, and the BOM makes Excel read UTF-8.
+export function tableText(lines, delimiter = ',') {
   const cell = value => {
     let text = String(value ?? '');
     if (/^\s*[=+@-]/.test(text) || /^[\t\r]/.test(text)) text = "'" + text;
     // the import also accepts "，" and ";" inside group lists, so quote whatever could split a cell
     return /["\r\n,，\t]/.test(text) ? '"' + text.replaceAll('"', '""') + '"' : text;
   };
-  const lines = [USER_COLUMNS, ...rows.map(user => [user.username, '', user.realName, user.groups.join(';')])];
-  return { body: '\uFEFF' + lines.map(row => row.map(cell).join(delimiter)).join('\r\n'), name: 'users.' + format,
-    mime: format === 'csv' ? 'text/csv; charset=utf-8' : format === 'tsv' ? 'text/tab-separated-values; charset=utf-8' : 'text/plain; charset=utf-8' };
+  return '\uFEFF' + lines.map(row => row.map(cell).join(delimiter)).join('\r\n');
 }
 
 // Rows of cells. Quoted cells may contain delimiters, quotes ("") and line breaks. A file whose first

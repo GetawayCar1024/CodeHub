@@ -11,6 +11,7 @@ import { setupUserRoutes } from './routes-user.js';
 import { setupAdminRoutes } from './routes-admin.js';
 import { joinedAt } from './participation.js';
 import { migrateContestNames } from './contest-identity.js';
+import { migrateFolderFormats } from './folder-names.js';
 
 export { VERSION } from './version.js';
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -99,9 +100,9 @@ export function createApp({ dataDir, resetAdmin = false, log = console.log }) {
     for (const [sid, s] of Object.entries(data.sessions)) if (s.uid === admin.id) delete data.sessions[sid];
     ctx.log('admin password set to the default');
   }
-  store.flush();
-
   ctx.lemon = new LemonLink(ctx);
+  migrateFolderFormats(ctx);
+  store.flush();
 
   ctx.newSession = (res, user) => {
     const sid = randomToken();

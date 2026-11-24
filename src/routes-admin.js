@@ -10,8 +10,9 @@ import { commitContestEdit } from './contest-edit.js';
 import { materialTiming } from './contest-materials.js';
 import { contestantEnd, extraMinutes, lastEnd } from './contest-time.js';
 import { joinedAt } from './participation.js';
-import { exportUsers, parseUserRows } from './user-export.js';
+import { exportUsers, parseUserRows, tableText } from './user-export.js';
 import { contestNameValid } from './contest-identity.js';
+import { DEFAULT_FOLDER_FORMAT, LEGACY_FOLDER_FORMAT, checkFolderFormat, contestFolders, folderParticipants, previewFolders } from './folder-names.js';
 
 const MAX_UPLOAD = 1024 * 1024 * 1024;
 const collator = new Intl.Collator('zh-CN', { numeric: true });
@@ -348,6 +349,7 @@ export function setupAdminRoutes(router, ctx) {
     problems: c.problems,
     groups: c.groups,
     subFolder: !!c.subFolder,
+    folderFormat: c.folderFormat ?? LEGACY_FOLDER_FORMAT,
     strict: c.strict !== false,
     downZip: c.downZip,
     downZipPassword: c.downZipPassword || '',
@@ -356,6 +358,12 @@ export function setupAdminRoutes(router, ctx) {
     hasSubmissions: hasSubmissions(c),
     lemonLink: c.lemon?.contest && ctx.lemon.client.configured() ? ctx.lemon.client.resultsLink(c.lemon.contest) : null,
   });
+
+  const foldersOf = (c) => {
+    const folders = contestFolders(data, c);
+    if (folders.changed) ctx.store.save(); // newly given numbers
+    return folders;
+  };
 
   const applyContest = (c, body, isNew) => {
     const next = { ...c };
@@ -419,6 +427,11 @@ export function setupAdminRoutes(router, ctx) {
     if (isNew || 'subFolder' in body) {
       next.subFolder = !!body.subFolder;
     }
+    // More contestants (other groups) also need enough digits for their numbers.
+    if (isNew || 'folderFormat' in body || 'groups' in body) {
+      const format = 'folderFormat' in body ? body.folderFormat : next.folderFormat ?? (isNew ? DEFAULT_FOLDER_FORMAT : LEGACY_FOLDER_FORMAT);
+      next.folderFormat = checkFolderFormat(data, c, format, next.groups);
+    }
     if (isNew || 'strict' in body) {
       if ('strict' in body && typeof body.strict !== 'boolean') fail(400, '严格模式须为布尔值');
       next.strict = body.strict !== false;
@@ -450,6 +463,10 @@ export function setupAdminRoutes(router, ctx) {
       });
     }
     if (!old || old.endTime !== c.endTime) ctx.lemon.timesChanged(c);
+    if (old && (old.folderFormat ?? LEGACY_FOLDER_FORMAT) !== c.folderFormat) {
+      foldersOf(c); // store the numbers right away
+      ctx.lemon.foldersChanged(c);
+    }
   };
 
   // ?page=1&pageSize=20, ordered by sortContests()
@@ -549,10 +566,14 @@ export function setupAdminRoutes(router, ctx) {
     const remoteMap = new Map((remote?.contestants || []).map((x) => [x.name, x]));
     const taskIndex = new Map((remote?.tasks || []).map((t, i) => [t.sourceFileName, i]));
     const pending = lemon.linked ? ctx.lemon.pendingOf(c) : {};
+    const folders = foldersOf(c);
+    // results are where the folder is on LemonServer, also while a renamed one is still being uploaded
+    const uploaded = lemon.linked ? ctx.lemon.remoteFolders(c) : {};
     const users = data.users.filter((u) => u.role !== 'admin' && (allowedFor(c, u) || subs[u.id]));
     users.sort((a, b) => collator.compare(a.username, b.username));
     const rows = users.map((u) => {
-      const ct = remoteMap.get(u.username);
+      const folder = folders.names.get(String(u.id)) ?? null;
+      const ct = remoteMap.get(uploaded[u.id] ?? folder ?? u.username);
       const cells = {};
       let total = null;
       for (const pr of c.problems) {
@@ -571,7 +592,7 @@ export function setupAdminRoutes(router, ctx) {
         };
       }
       return { id: u.id, username: u.username, realName: u.realName, groups: u.groups || [], cells, total, finishedAt: data.finished[c.id]?.[u.id] ?? null,
-        joinedAt: joinedAt(data, c, u.id),
+        joinedAt: joinedAt(data, c, u.id), folder, folderError: folders.errors.get(String(u.id)) ?? null,
         extraMinutes: extraMinutes(c, u.id), endTime: contestantEnd(c, u.id),
         canExtend: allowedFor(c, u) && !data.finished[c.id]?.[u.id] && Date.now() < contestantEnd(c, u.id) };
     });
@@ -653,23 +674,42 @@ export function setupAdminRoutes(router, ctx) {
     return { ...s, code: fs.readFileSync(file, 'utf8') };
   });
 
+  // Contestant folders are named by the contest's folder name format (the local copy uses accounts).
   route('GET', '/api/admin/contests/:id/archive.zip', (req, res, p) => {
     const c = getContest(p.id);
-    const entries = [];
-    for (const uid of Object.keys(data.participants[c.id] || {})) {
-      const user = ctx.user(uid);
-      if (user) entries.push({ name: `${c.name}/${user.username}/`, data: Buffer.alloc(0) });
-    }
+    const { names, errors } = foldersOf(c);
+    if (errors.size) fail(409, `${errors.size} 名选手无法生成文件夹名：${[...errors.values()][0]}，请在比赛设置中修改文件夹名格式`);
+    const entries = [...names.values()].map((folder) => ({ name: `${c.name}/${folder}/`, data: Buffer.alloc(0) }));
     for (const [uid, probs] of Object.entries(data.submissions[c.id] || {})) {
-      const u = ctx.user(uid);
-      if (!u) continue;
+      const u = ctx.user(uid), folder = names.get(uid);
+      if (!u || !folder) continue;
       for (const [prob, s] of Object.entries(probs)) {
         const file = ctx.submissionFile(c, u.username, prob);
         if (fs.existsSync(file))
-          entries.push({ name: `${c.name}/${ctx.submissionRelPath(c, u.username, prob)}`, data: fs.readFileSync(file), mtime: new Date(s.time) });
+          entries.push({ name: `${c.name}/${ctx.submissionRelPath(c, folder, prob)}`, data: fs.readFileSync(file), mtime: new Date(s.time) });
       }
     }
     sendBuffer(res, createZip(entries), { name: `${c.name}.zip`, mime: 'application/zip' });
+  });
+
+  // Which folder (and number) belongs to which account, e.g. to read results of anonymous folders.
+  route('GET', '/api/admin/contests/:id/folders.csv', (req, res, p) => {
+    const c = getContest(p.id);
+    const { names, errors } = foldersOf(c);
+    const groupNames = (u) => (u.groups || []).map((id) => data.groups.find((g) => g.id === id)?.name).filter(Boolean).join(';');
+    const rows = folderParticipants(data, c).map((u) => [names.get(String(u.id)) ?? '', u.username, u.realName, groupNames(u),
+      c.folderNumbers?.[u.id] ?? '', ...(errors.size ? [errors.get(String(u.id)) ?? ''] : [])])
+      .sort((a, b) => !a[0] - !b[0] || collator.compare(a[0], b[0]));
+    const header = ['文件夹', '用户名', '姓名', '分组', '编号', ...(errors.size ? ['说明'] : [])];
+    sendBuffer(res, Buffer.from(tableText([header, ...rows]), 'utf8'), { name: `${c.name}-文件夹对照.csv`, mime: 'text/csv; charset=utf-8' });
+  });
+
+  // {format, groups, contest}: example names and whether the numbers suffice, while the format is typed
+  route('POST', '/api/admin/folder-format/preview', async (req) => {
+    const body = await readJson(req);
+    const c = body.contest ? getContest(body.contest) : { id: null };
+    const groups = Array.isArray(body.groups) ? body.groups.map(Number).filter((id) => data.groups.some((g) => g.id === id)) : c.groups || [];
+    return previewFolders(data, c, body.format, groups);
   });
 
   route('POST', '/api/admin/contests/:id/lemon/judge', (req, res, p) => {

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { lastEnd } from './contest-time.js';
+import { contestFolders } from './folder-names.js';
 import { joinedAt } from './participation.js';
 
 export class LemonError extends Error {
@@ -129,6 +130,42 @@ export class LemonLink {
 
   hasPending(c) { return Object.keys(this.pendingOf(c)).length > 0; }
 
+  // user id -> the folder this server created for the contestant on LemonServer (where its results are)
+  remoteFolders(c) {
+    const st = this.state(c);
+    if (!st.remoteFolders || typeof st.remoteFolders !== 'object') st.remoteFolders = {};
+    return st.remoteFolders;
+  }
+
+  // Removes a contestant of this server with its results and files. A folder uploaded after the last
+  // judging is not a contestant yet; LemonServer adds it when the contest is refreshed.
+  async removeContestant(c, name) {
+    const endpoint = this.cpath(c) + '/contestants/' + encodeURIComponent(name);
+    try { await this.client.call('DELETE', endpoint, { query: { deleteFiles: 1 } }); return; }
+    catch (e) { if (e.status !== 404) throw e; }
+    await this.client.call('POST', this.cpath(c) + '/refresh');
+    try { await this.client.call('DELETE', endpoint, { query: { deleteFiles: 1 } }); }
+    catch (e) { if (e.status !== 404) throw e; } // not there, or the folder of another CodeHub server
+  }
+
+  // The folder name format changed: renamed contestants are uploaded again (the next upload removes their
+  // old folders first) and, after the contest, judged again. Until then the board shows them as not uploaded.
+  foldersChanged(c) {
+    if (!this.linked(c)) return;
+    const { names } = contestFolders(this.ctx.data, c);
+    const st = this.state(c), pending = this.pendingOf(c), subs = this.ctx.data.submissions[c.id] || {};
+    const version = Date.now() + Math.random();
+    for (const [uid, old] of Object.entries(this.remoteFolders(c))) {
+      if (names.get(uid) === old) continue;
+      pending[uid + '|'] = version;
+      for (const problem of Object.keys(subs[uid] || {})) pending[uid + '|' + problem] = version;
+      st.finalDone = false;
+    }
+    st.conflicts = [];
+    this.ctx.store.save();
+    this.flushUploads(c);
+  }
+
   // ---- submissions ----
 
   onJoin(c, user) {
@@ -172,44 +209,64 @@ export class LemonLink {
     if (!this.linked(c)) return false;
     const rt = this.rt(c);
     const pending = this.pendingOf(c);
+    const subs = this.ctx.data.submissions[c.id] || {};
+    const failed = (message) => { rt.uploadError = message; rt.uploadErrorAt = Date.now(); this.ctx.store.save(); return false; };
+    const folders = contestFolders(this.ctx.data, c);
+    const remote = this.remoteFolders(c);
+    // A folder made under an earlier name (the format or the contestant's name changed) is removed first,
+    // also when names are swapped; the contestant's code is then uploaded again and judged again.
+    for (const [uid, old] of Object.entries(remote)) {
+      const name = folders.names.get(uid);
+      if (!name || name === old) continue;
+      try { await this.removeContestant(c, old); }
+      catch (e) { return failed(e.body?.busy ? 'LemonServer 正在评测本比赛，评测结束后再修改文件夹名' : e.message); }
+      delete remote[uid];
+      const version = Date.now() + Math.random();
+      pending[uid + '|'] = version;
+      for (const problem of Object.keys(subs[uid] || {})) pending[uid + '|' + problem] = version;
+      this.state(c).finalDone = false;
+      this.ctx.store.save();
+    }
     for (const key of Object.keys(pending)) {
       const version = pending[key]; // a newer submission arriving during the upload keeps it pending
       const [uid, problem] = key.split('|');
       const user = this.ctx.data.users.find((u) => String(u.id) === uid);
+      const folder = folders.names.get(uid); // none while the folder name cannot be formed (shown on the board)
       if (!problem) {
         if (!user || !joinedAt(this.ctx.data, c, user.id)) { delete pending[key]; continue; }
+        if (!folder) continue;
         try {
-          await this.client.call('POST', this.cpath(c) + '/files/mkdir', { json: { root: 'source', path: user.username } });
+          await this.client.call('POST', this.cpath(c) + '/files/mkdir', { json: { root: 'source', path: folder } });
           if (pending[key] === version) delete pending[key];
+          remote[uid] = folder;
           rt.uploadError = null;
           this.setConflict(c, user.username, false);
         } catch (e) {
           if (e.body?.ownedByOther) { delete pending[key]; this.setConflict(c, user.username, true); continue; }
-          rt.uploadError = e.message; rt.uploadErrorAt = Date.now(); this.ctx.store.save(); return false;
+          return failed(e.message);
         }
         continue;
       }
-      const sub = this.ctx.data.submissions[c.id]?.[uid]?.[problem];
+      const sub = subs[uid]?.[problem];
       const file = user && sub ? this.ctx.submissionFile(c, user.username, problem) : null;
       if (!file || !fs.existsSync(file)) {
         delete pending[key];
         continue;
       }
+      if (!folder) continue;
       try {
         await this.client.call('PUT', this.cpath(c) + '/files/upload', {
-          query: { root: 'source', path: this.ctx.submissionRelPath(c, user.username, problem) },
+          query: { root: 'source', path: this.ctx.submissionRelPath(c, folder, problem) },
           raw: fs.readFileSync(file),
         });
         if (pending[key] === version) delete pending[key];
+        remote[uid] = folder;
         rt.uploadError = null;
         this.setConflict(c, user.username, false);
       } catch (e) {
-        // another CodeHub server uses this account name in the same LemonServer contest: never overwrite it
+        // another CodeHub server uses this folder name in the same LemonServer contest: never overwrite it
         if (e.body?.ownedByOther) { delete pending[key]; this.setConflict(c, user.username, true); continue; }
-        rt.uploadError = e.message;
-        rt.uploadErrorAt = Date.now();
-        this.ctx.store.save();
-        return false;
+        return failed(e.message);
       }
     }
     this.ctx.store.save();
@@ -226,6 +283,7 @@ export class LemonLink {
     st.slotBase = null;
     st.claimedBy = this.ctx.data.instanceId;
     st.conflicts = [];
+    st.remoteFolders = {}; // nothing of this contest exists in the newly linked one yet
     const rt = this.rt(c);
     rt.remote = null;
     rt.needTasks = true;

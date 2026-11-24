@@ -151,6 +151,7 @@ h3 { font-size: 15px; }
 .row.link { cursor: pointer; }
 .row.link:hover { background: var(--card2); }
 .row .chev { color: var(--muted); margin-left: auto; }
+.folder-examples { display: flex; flex-direction: column; gap: 2px; min-height: 21px; font-size: 13px; overflow-wrap: anywhere; }
 
 .muted { color: var(--muted); }
 .small { font-size: 12.5px; }

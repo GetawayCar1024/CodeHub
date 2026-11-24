@@ -7,6 +7,7 @@ import { VERSION } from './version.js';
 import { contestMaterials } from './contest-materials.js';
 import { allowedFor, contestPhase, contestantEnd, extraMinutes } from './contest-time.js';
 import { historyBlocked, joinedAt, joinContest } from './participation.js';
+import { contestFolders } from './folder-names.js';
 export { allowedFor, contestPhase } from './contest-time.js';
 
 // Running and future contests first (earliest start first), then ended ones (latest start first).
@@ -152,7 +153,9 @@ export function setupUserRoutes(router, ctx) {
     if (body.confirm !== true) fail(400, '请确认参加比赛');
     if (body.strict !== (c.strict !== false)) fail(409, '比赛模式已改变，请刷新后重新确认');
     if (phase === 'ended') fail(409, '比赛已结束');
-    return { joinedAt: joinContest(ctx, c, user) };
+    const time = joinContest(ctx, c, user);
+    if (contestFolders(data, c).changed) ctx.store.save(); // the number of {id} is given on entry
+    return { joinedAt: time };
   });
 
   router.get('/api/contests/:id/down.zip', (req, res, p) => {

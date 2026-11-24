@@ -684,7 +684,7 @@ async function renderContestForm(id) {
   const f = contest ? structuredClone(contest) : {
     name: '', title: '', startTime: t0.getTime(), endTime: t0.getTime() + 4 * 3600000, earlyMinutes: 30,
     downZipReleaseMinutes: 30, passwordReleaseMinutes: 0,
-    problems: [{ name: '', title: '' }], groups: [], subFolder: false, strict: true, downZipPassword: '', lemon: { contest: '', interval: null },
+    problems: [{ name: '', title: '' }], groups: [], subFolder: false, folderFormat: '{name}', strict: true, downZipPassword: '', lemon: { contest: '', interval: null },
   };
   // In the editor, title holds only a custom display name; '' means "same as the file name".
   // Keeping the saved copy of the old name here made it reappear (and be saved) after a rename + re-render.
@@ -815,7 +815,7 @@ async function renderContestForm(id) {
   const renderGroups = () => {
     put(gbox, ...(groups.length ? groups.map((g) => h('button', {
       class: 'chip' + (f.groups.includes(g.id) ? ' on' : ''),
-      onclick: () => { f.groups = f.groups.includes(g.id) ? f.groups.filter((x) => x !== g.id) : [...f.groups, g.id]; renderGroups(); },
+      onclick: () => { f.groups = f.groups.includes(g.id) ? f.groups.filter((x) => x !== g.id) : [...f.groups, g.id]; renderGroups(); previewFolders(); },
     }, g.name)) : [h('span', { class: 'muted' }, '暂无分组')]));
   };
   renderGroups();
@@ -880,10 +880,46 @@ async function renderContestForm(id) {
     h('div', { class: 'section-foot' }, '0 表示开赛时；须满足 提前进入 ≥ down.zip 公开 ≥ 密码公布。题目名与密码同时公布'));
 
   // --- storage
+  const presetFolders = { '{name}': '姓名', '{username}': '用户名' };
+  let customFolder = presetFolders[f.folderFormat] ? '' : f.folderFormat;
+  const folderExamples = h('div', { class: 'folder-examples', 'aria-live': 'polite' });
+  const folderInput = h('input', { type: 'text', class: 'full mono', name: 'folderFormat', 'aria-label': '自定义文件夹名格式', placeholder: '如 te{id:3}st',
+    value: customFolder, oninput: (e) => { customFolder = f.folderFormat = e.target.value; previewFolders(); } });
+  const customRow = row('格式', folderInput);
+  customRow.classList.toggle('hidden', !!presetFolders[f.folderFormat]);
+  const folderMode = segmented([['{name}', '姓名'], ['{username}', '用户名'], ['custom', '自定义']], presetFolders[f.folderFormat] ? f.folderFormat : 'custom', (v) => {
+    f.folderFormat = v === 'custom' ? customFolder : v;
+    customRow.classList.toggle('hidden', v !== 'custom');
+    if (v === 'custom') folderInput.focus();
+    previewFolders();
+  });
+  let previewTimer, previewSerial = 0;
+  // Example names and whether the digits suffice, from the server (it also gives the numbers).
+  const previewFolders = () => {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(async () => {
+      const serial = ++previewSerial;
+      let r;
+      try { r = await api('POST', '/api/admin/folder-format/preview', { format: f.folderFormat, groups: f.groups, contest: contest?.id ?? null }); } catch { return; }
+      if (serial !== previewSerial || !folderExamples.isConnected) return;
+      const renamed = contest?.lemon?.contest && f.folderFormat.trim() !== contest.folderFormat;
+      put(folderExamples,
+        r.examples.length ? h('span', { class: 'mono' }, r.examples.join('、') + '…') : null,
+        r.capacity ? h('span', { class: 'muted' }, `最多 ${r.capacity} 个编号，可参赛 ${r.eligible} 人`) : null,
+        r.error ? h('span', { class: 'danger-text' }, r.error) : null,
+        renamed && !r.error ? h('span', { class: 'warn-text' }, '保存后 LemonServer 上已同步的文件夹会改用新名称，需要重新评测') : null);
+    }, 200);
+  };
   append(main, h('div', { class: 'section-title' }, '存储'),
     h('div', { class: 'group' },
-      row('子文件夹', switchEl(f.subFolder, (v) => { f.subFolder = v; }))),
-    h('div', { class: 'section-foot' }, '切换时自动迁移已有代码。位于 ', h('code', null, settings.effectiveStorageRoot)));
+      row('子文件夹', switchEl(f.subFolder, (v) => { f.subFolder = v; })),
+      row('文件夹名', folderMode),
+      customRow,
+      row('示例', folderExamples)),
+    h('div', { class: 'section-foot' }, '本地代码按用户名保存在 ', h('code', null, settings.effectiveStorageRoot), '，切换子文件夹时自动迁移。',
+      '文件夹名用于导出代码和同步到 LemonServer，自定义可用 ', h('code', null, '{name}'), '、', h('code', null, '{username}'), '、',
+      h('code', null, '{id:3}'), '（三位编号，按参赛顺序分配并保存）。'));
+  previewFolders();
 
   // --- LemonServer
   if (lemonOn || f.lemon.contest) {
@@ -969,7 +1005,7 @@ async function renderContestForm(id) {
       name: (f.name || '').trim(), title: f.title, startTime: f.startTime, endTime: f.endTime,
       earlyMinutes: f.earlyMinutes, problems: f.problems.filter((p) => p.name || p.title), groups: f.groups,
       downZipReleaseMinutes: f.downZipReleaseMinutes, passwordReleaseMinutes: f.passwordReleaseMinutes,
-      subFolder: f.subFolder, strict: f.strict !== false, downZipPassword: f.downZipPassword, lemon: { contest: f.lemon.contest || '', interval: f.lemon.interval },
+      subFolder: f.subFolder, folderFormat: f.folderFormat, strict: f.strict !== false, downZipPassword: f.downZipPassword, lemon: { contest: f.lemon.contest || '', interval: f.lemon.interval },
     };
     saving = true;
     try {
@@ -1025,6 +1061,7 @@ async function renderBoard(id) {
     const extendable = visibleRows.filter((r) => r.canExtend);
     const absent = groupRows.length - groupRows.filter((r) => r.joinedAt).length;
     const finished = visibleRows.filter((r) => r.finishedAt).length;
+    const folderErrors = b.rows.filter((r) => r.folderError).length;
     let submitted = 0, judged = 0;
     for (const r of visibleRows) for (const cell of Object.values(r.cells)) { submitted++; if (cell.judged) judged++; }
 
@@ -1080,7 +1117,9 @@ async function renderBoard(id) {
         h('td', { class: 'pick' }, h('input', { type: 'checkbox', 'data-pick': r.id, 'aria-label': '选择 ' + r.username,
           checked: picked.has(r.id), disabled: !r.canExtend, title: r.canExtend ? '' : '已结束比赛，不能修改延时',
           onchange: (e) => { e.target.checked ? picked.add(r.id) : picked.delete(r.id); render(); } })),
-        h('td', { class: 'mono' }, r.username, r.joinedAt ? null : h('span', { class: 'muted small', title: '尚未确认参加' }, ' 未参加')), h('td', null, r.realName),
+        h('td', { class: 'mono' }, r.username, r.joinedAt ? null : h('span', { class: 'muted small', title: '尚未确认参加' }, ' 未参加'),
+          r.folder && r.folder !== r.username && r.folder !== r.realName ? h('div', { class: 'muted small', 'data-folder': r.id, title: '导出和 LemonServer 中的文件夹名' }, r.folder) : null,
+          r.folderError ? h('div', { class: 'danger-text small' }, r.folderError) : null), h('td', null, r.realName),
         c.problems.map((p) => {
           const s = r.cells[p.name];
           const attrs = { 'data-cell': r.id + '|' + p.name };
@@ -1109,9 +1148,12 @@ async function renderBoard(id) {
         h('span', { class: 'badge ' + PHASE_BADGE[c.phase] }, PHASE[c.phase]),
         h('span', { class: 'muted' }, fmtRange(c.startTime, c.endTime)),
         h('div', { class: 'right' },
+          b.rows.some((r) => r.folder) ? h('a', { class: 'btn', href: `/api/admin/contests/${enc(c.id)}/folders.csv`, title: '文件夹名、编号与账号的对应关系' }, '下载对照表') : null,
           submitted ? h('a', { class: 'btn', href: `/api/admin/contests/${enc(c.id)}/archive.zip` }, '下载全部代码') : null,
           h('button', { onclick: () => go(`#/admin/c/${enc(c.id)}/edit`) }, '编辑'))),
       lemonCard,
+      folderErrors ? h('div', { class: 'card danger-text small', style: { marginBottom: '16px' } },
+        `${folderErrors} 名选手的文件夹名无法生成（编号位数不足），未导出也未同步，请在比赛设置中增加编号位数`) : null,
       h('div', { class: 'toolbar board-tools' },
         h('select', { 'aria-label': '榜单分组', value: groupFilter, onchange: event => { groupFilter = event.target.value; render(); } },
           h('option', { value: '', selected: !groupFilter }, '全部组别'), ...(b.groups || []).map(group => h('option', { value: group.id, selected: String(group.id) === groupFilter }, group.name))),

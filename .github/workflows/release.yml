@@ -41,8 +41,8 @@ jobs:
       - name: Participation and user exports
         run: node --test tests/participation.mjs tests/reliability.mjs
 
-      - name: Shared LemonServer contests
-        run: node --test tests/lemon-sharing.mjs
+      - name: Shared LemonServer contests and folder names
+        run: node --test tests/lemon-sharing.mjs tests/folder-names.mjs
 
       - name: Package
         run: node packaging/package.mjs windows
@@ -97,8 +97,8 @@ jobs:
       - name: Participation and user exports
         run: node --test tests/participation.mjs tests/reliability.mjs
 
-      - name: Shared LemonServer contests
-        run: node --test tests/lemon-sharing.mjs
+      - name: Shared LemonServer contests and folder names
+        run: node --test tests/lemon-sharing.mjs tests/folder-names.mjs
 
       - name: Package
         id: pkg

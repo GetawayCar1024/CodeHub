@@ -67,7 +67,8 @@ test('empty participant synchronization retries failures without creating submis
   assert.ok(app.ctx.lemon.pendingOf(c)[user.id + '|']);
   fail = false; await app.ctx.lemon.flushUploads(c);
   assert.deepEqual(app.ctx.lemon.pendingOf(c), {});
-  assert.ok(requests.every(request => request.method === 'POST' && request.path.endsWith('/files/mkdir') && request.options.json.path === 'alice'));
+  // new contests name LemonServer folders after the contestants' real names
+  assert.ok(requests.every(request => request.method === 'POST' && request.path.endsWith('/files/mkdir') && request.options.json.path === 'Alice'));
   assert.equal(app.ctx.data.submissions[c.id], undefined);
   assert.equal(app.ctx.lemon.rt(c).pending, false);
 }));

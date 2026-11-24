@@ -74,7 +74,7 @@ async function waitFor(what, fn, timeout = 60000) {
 try {
   const admin = client();
   const st = await admin('GET', '/api/status');
-  assert.equal(st.version, '0.1.14');
+  assert.equal(st.version, '0.1.16');
   assert.equal(st.user, null);
 
   step('admin login, CSRF header');
@@ -282,7 +282,8 @@ try {
     });
     assert.equal(board.lemon.history[0].message, '已评测 1 项'); // only the re-submitted code
     assert.ok(board.lemon.history[0].job > other.job.id); // it was queued after the other contest
-    const src = await lemon('GET', C + '/files', { query: { root: 'source', path: 'SC-00001' }, token: lemonKey });
+    // new contests name the LemonServer folders after the contestants' real names
+    const src = await lemon('GET', C + '/files', { query: { root: 'source', path: '张三' }, token: lemonKey });
     assert.ok(src.entries.some((e) => e.name === 'aplusb.cpp' && e.size === Buffer.byteLength(WA)));
 
     step('after the contest: one more run judging what is unjudged');
@@ -294,7 +295,7 @@ try {
     assert.deepEqual([board.lemon.history[0].kind, board.lemon.history[0].mode], ['final', 'unjudged']);
     const res = await lemon('GET', C, { token: lemonKey });
     const scores = Object.fromEntries(res.contestants.map((x) => [x.name, x.totalScore]));
-    assert.deepEqual(scores, { 'SC-00001': 75, 'SC-00002': 75 });
+    assert.deepEqual(scores, { 张三: 75, 'SC-00002': 75 });
     const ended = app.ctx.contest(A.id);
     await admin('PUT', '/api/admin/contests/' + A.id, { endTime: ended.endTime + 60000 }, { expect: 409 });
     await admin('PUT', '/api/admin/contests/' + A.id, { startTime: ended.startTime, endTime: ended.endTime, title: '测试考试' });
@@ -343,7 +344,19 @@ try {
     assert.deepEqual(board.rows.map(r => r.cells.sum.score), [75, 75]);
     assert.deepEqual([board.lemon.history[0].kind, board.lemon.history[0].mode], ['final', 'unjudged']);
     assert.equal((await admin('GET', `/api/admin/contests/${A.id}/source/${byName['SC-00001'].id}/sum`)).code, WA);
-    assert.equal(fs.readFileSync(path.join(LEMON_ROOT, lemonContest, 'source', 'SC-00001', 'sum.cpp'), 'utf8'), WA);
+    assert.equal(fs.readFileSync(path.join(LEMON_ROOT, lemonContest, 'source', '张三', 'sum.cpp'), 'utf8'), WA);
+
+    step('a new folder name format renames the LemonServer folders, which are judged again');
+    await admin('PUT', '/api/admin/contests/' + A.id, { folderFormat: 'te{id:3}st' });
+    app.ctx.lemon.rt(app.ctx.contest(A.id)).finalTriedAt = 0;
+    board = await waitFor('renamed folders judged', async () => {
+      const b = await admin('GET', `/api/admin/contests/${A.id}/board`);
+      return b.lemon.finalDone && !b.lemon.busy && b.rows.every(r => r.cells.sum?.judged && r.cells.sum.synced) && b;
+    }, 90000);
+    assert.deepEqual(board.rows.map(r => [r.username, r.folder, r.cells.sum.score]), [['SC-00001', 'te001st', 75], ['SC-00002', 'te002st', 75]]);
+    assert.deepEqual(fs.readdirSync(path.join(LEMON_ROOT, lemonContest, 'source')).sort(), ['te001st', 'te002st']);
+    assert.deepEqual((await lemon('GET', C, { token: lemonKey })).contestants.map(x => x.name).sort(), ['te001st', 'te002st']);
+    assert.ok(fs.existsSync(path.join(dataDir, 'submissions', '测试赛2', 'SC-00001', 'sum.cpp')), 'the local copy keeps account names');
   }
   await admin('PUT', '/api/admin/password', { current: '123456', password: '12' }, { expect: 400 });
   await admin('PUT', '/api/admin/password', { current: '123456', password: 'admin-pass' });
