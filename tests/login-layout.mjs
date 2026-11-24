@@ -334,6 +334,10 @@ try {
   assert.ok(createdContest.downZip, 'the prepared file must upload when the save is retried');
   console.log('PASS new contest can prepare a ZIP/password and retry a failed upload');
 
+  // A request of the admin that is answered (401) only after the next user signed in must not sign that user out.
+  await evaluate(`(()=>{const original=window.fetch;window.fetch=(url,options)=>{if(String(url).includes('/api/admin/settings')){window.fetch=original;
+    return new Promise(resolve=>{window.releaseLateAnswer=()=>resolve(new Response('{"error":"请先登录"}',{status:401,headers:{'Content-Type':'application/json'}}));});}
+    return original(url,options);};api('GET','/api/admin/settings').catch(()=>{});})()`);
   await evaluate(`document.querySelector('.user-btn').click();[...document.querySelectorAll('.menu .item')].find(e=>e.textContent.includes('退出登录')).click()`);
   for (let i = 0; i < 200 && !await evaluate('!!document.querySelector(".login")'); i++) await delay(25);
   assert.equal(await evaluate('document.querySelector("#app").classList.contains("login-page")'), true);
@@ -344,6 +348,10 @@ try {
   contest.endTime = contest.startTime + 3600000;
   await evaluate(`document.querySelector('.login input[type=text]').value='alice';document.querySelector('.login input[type=password]').value='test-password';document.querySelector('form.login').requestSubmit()`);
   await wait('!!document.querySelector(".user-btn") && !document.querySelector(".login")');
+  await evaluate('window.releaseLateAnswer()');
+  await delay(150);
+  assert.equal(await evaluate('S.status.user?.username'), 'alice', 'a late answer to the previous user keeps the next one signed in');
+  assert.ok(await evaluate('!document.querySelector(".login")'));
   await evaluate(`location.hash='#/c/${contestId}'`);
   await wait('!!document.querySelector("[data-material=downzip]")');
   assert.ok(await evaluate('!!document.querySelector("[data-problems-pending]")'));

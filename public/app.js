@@ -3,7 +3,7 @@
 // ============================================================ helpers
 
 const $app = document.getElementById('app');
-const S = { status: null, offset: 0, timers: [] };
+const S = { status: null, offset: 0, timers: [], signIn: 0 }; // signIn changes whenever the signed-in user does
 
 function h(tag, attrs, ...children) {
   const el = document.createElement(tag);
@@ -42,6 +42,7 @@ const enc = encodeURIComponent;
 const now = () => Date.now() + S.offset;
 
 async function api(method, url, body, opts = {}) {
+  const signIn = S.signIn;
   const headers = { 'X-CodeHub': '1' };
   let payload;
   if (opts.raw !== undefined) {
@@ -57,8 +58,9 @@ async function api(method, url, body, opts = {}) {
   if (!res.ok) {
     const err = new Error((data && data.error) || `HTTP ${res.status}`);
     err.status = res.status;
-    if (res.status === 401 && !opts.noRedirect) {
-      S.status.user = null;
+    // a late answer to a request of the previous user (sent before signing out) must not sign out the next one
+    if (res.status === 401 && !opts.noRedirect && signIn === S.signIn) {
+      S.status.user = null; S.signIn++;
       go('#/login');
     }
     throw err;
@@ -326,7 +328,7 @@ window.addEventListener('hashchange', route);
 
 async function logout() {
   try { await api('POST', '/api/logout'); } catch { /* ignore */ }
-  S.status.user = null;
+  S.status.user = null; S.signIn++;
   go('#/login');
 }
 
@@ -376,7 +378,7 @@ function renderLogin() {
     btn.disabled = true;
     try {
       const r = await api('POST', '/api/login', { username: user.value.trim(), password: pass.value }, { noRedirect: true });
-      S.status.user = r.user;
+      S.status.user = r.user; S.signIn++;
       go(loginReturn());
     } catch (err) { fail(err); } finally { btn.disabled = false; }
   };
@@ -894,13 +896,16 @@ async function renderContestForm(id) {
     previewFolders();
   });
   let previewTimer, previewSerial = 0;
-  // Example names and whether the digits suffice, from the server (it also gives the numbers).
-  const previewFolders = () => {
+  // Example names and whether the digits suffice, from the server (it also gives the numbers). Only while
+  // this editor is shown, and an expired session never redirects from here: a late answer must not sign
+  // out whoever signs in next.
+  const previewFolders = (delay = 200) => {
     clearTimeout(previewTimer);
     previewTimer = setTimeout(async () => {
+      if (!folderExamples.isConnected) return;
       const serial = ++previewSerial;
       let r;
-      try { r = await api('POST', '/api/admin/folder-format/preview', { format: f.folderFormat, groups: f.groups, contest: contest?.id ?? null }); } catch { return; }
+      try { r = await api('POST', '/api/admin/folder-format/preview', { format: f.folderFormat, groups: f.groups, contest: contest?.id ?? null }, { noRedirect: true }); } catch { return; }
       if (serial !== previewSerial || !folderExamples.isConnected) return;
       const renamed = contest?.lemon?.contest && f.folderFormat.trim() !== contest.folderFormat;
       put(folderExamples,
@@ -919,7 +924,7 @@ async function renderContestForm(id) {
     h('div', { class: 'section-foot' }, '本地代码按用户名保存在 ', h('code', null, settings.effectiveStorageRoot), '，切换子文件夹时自动迁移。',
       '文件夹名用于导出代码和同步到 LemonServer，自定义可用 ', h('code', null, '{name}'), '、', h('code', null, '{username}'), '、',
       h('code', null, '{id:3}'), '（三位编号，按参赛顺序分配并保存）。'));
-  previewFolders();
+  previewFolders(0);
 
   // --- LemonServer
   if (lemonOn || f.lemon.contest) {
